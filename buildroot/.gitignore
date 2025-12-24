@@ -1,0 +1,22 @@
+/output
+# Exception: keep rpi-eeprom-digest tool needed for boot.img signing
+!/output/host/
+/output/host/*
+!/output/host/bin/
+/output/host/bin/*
+!/output/host/bin/rpi-eeprom-digest
+
+/dl
+/.auto.deps
+/.config.cmd
+/.config.old
+/..config.tmp
+/.config
+*.depend
+*.o
+/*.patch
+/*.diff
+*.orig
+*.rej
+*~
+*.pyc

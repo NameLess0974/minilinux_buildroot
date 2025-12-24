@@ -1,0 +1,28 @@
+# Configuration SSH pour minilinux
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+
+# Authentification
+PermitRootLogin yes
+PasswordAuthentication yes
+PubkeyAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+
+# Configuration host keys
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# Logging
+SyslogFacility AUTH
+LogLevel INFO
+
+# Subsystems
+Subsystem sftp /usr/libexec/sftp-server
+
+# Misc
+UsePAM no
+X11Forwarding no
+PrintMotd yes

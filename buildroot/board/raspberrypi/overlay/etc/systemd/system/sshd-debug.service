@@ -1,0 +1,15 @@
+[Unit]
+Description=SSH Debug Fallback
+After=sshd.service
+Wants=sshd.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 30
+ExecStart=/bin/bash -c 'if ! systemctl is-active --quiet sshd.service; then /usr/local/bin/sshd-debug.sh; fi'
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

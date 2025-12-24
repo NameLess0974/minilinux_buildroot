@@ -1,0 +1,34 @@
+# 1. Créer un point de montage
+mkdir -p /tmp/bootimg
+
+# 2. Monter boot.img (c'est une image FAT)
+sudo mount -o loop ~/minilinux/httpboot/boot.img /tmp/bootimg
+
+# 3. Le script est dans rootfs.cpio.zst, il faut l'extraire
+cd /tmp/bootimg
+zstd -d rootfs.cpio.zst -o /tmp/rootfs.cpio
+
+# 4. Extraire le cpio
+cd /tmp
+mkdir -p rootfs-extracted
+cd rootfs-extracted
+sudo cpio -idmv < /tmp/rootfs.cpio
+
+# 5. Le script est ici :
+sudo nano /tmp/rootfs-extracted/usr/local/bin/auto-installer.sh
+
+# 6. Après modification, recréer le cpio
+cd /tmp/rootfs-extracted
+sudo find . | sudo cpio -o -H newc > /tmp/rootfs-new.cpio
+
+# 7. Recompresser
+zstd -19 /tmp/rootfs-new.cpio -o /tmp/rootfs.cpio.zst
+
+# 8. Remplacer dans boot.img
+sudo cp /tmp/rootfs.cpio.zst /tmp/bootimg/rootfs.cpio.zst
+
+# 9. Démonter
+sudo umount /tmp/bootimg
+
+# 10. Signer avec la key
+rpi-eeprom-digest -i boot.img -o boot.sig -k bootkey-private.pem
