@@ -89,9 +89,16 @@ buildroot/board/raspberrypi-system-update/bootkey-private.pem  # Clé RSA pour s
 
 **Debian/Ubuntu :**
 ```bash
-    sudo apt-get install -y build-essential wget cpio unzip rsync bc \
+sudo apt-get install -y build-essential wget cpio unzip rsync bc \
     libncurses5-dev git python3 file perl patch gawk tar bzip2 \
     gzip xz-utils genimage mtools dosfstools e2fsprogs zstd
+```
+
+**Arch Linux :**
+```bash
+sudo pacman -S --needed base-devel wget cpio unzip rsync bc ncurses \
+    git python file perl patch gawk tar bzip2 gzip xz genimage mtools \
+    dosfstools e2fsprogs zstd
 ```
 
 ## Build personnalisé
