@@ -63,6 +63,7 @@ type Storage interface {
 	Count404InWindow(ctx context.Context, mac string, windowStart time.Time) (int, error)
 	Get404Timestamps(ctx context.Context, mac string, windowStart time.Time) ([]time.Time, error)
 	Cleanup404Events(ctx context.Context, before time.Time) (int64, error)
+	Cleanup404EventsForMAC(ctx context.Context, mac string, cutoff time.Time) (int64, error)
 
 	// Lifecycle
 	Close() error

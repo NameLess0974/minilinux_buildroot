@@ -36,9 +36,6 @@ func NewSQLiteStorage(dbPath string) (*SQLiteStorage, error) {
 
 	storage := &SQLiteStorage{db: db}
 
-	// Start background cleanup goroutine
-	go storage.cleanupLoop()
-
 	slog.Info("SQLite storage initialized", "path", dbPath)
 	return storage, nil
 }
@@ -92,23 +89,15 @@ func initSchema(db *sql.DB) error {
 	return err
 }
 
-// cleanupLoop periodically removes old 404 events
-func (s *SQLiteStorage) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		// Clean up events older than 10 minutes
-		cutoff := time.Now().Add(-10 * time.Minute)
-		count, err := s.Cleanup404Events(ctx, cutoff)
-		if err != nil {
-			slog.Error("failed to cleanup 404 events", "error", err)
-		} else if count > 0 {
-			slog.Debug("cleaned up old 404 events", "count", count)
-		}
-		cancel()
+// Cleanup404EventsForMAC removes old 404 events for a specific MAC (called on-request)
+func (s *SQLiteStorage) Cleanup404EventsForMAC(ctx context.Context, mac string, cutoff time.Time) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `
+		DELETE FROM device_404_events WHERE mac = ? AND timestamp < ?
+	`, mac, cutoff.Unix())
+	if err != nil {
+		return 0, err
 	}
+	return result.RowsAffected()
 }
 
 // GetDevice retrieves a device by MAC address

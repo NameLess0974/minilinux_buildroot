@@ -72,6 +72,26 @@ func (m *Machine) Handle404Request(ctx context.Context, mac string) (*Transition
 func (m *Machine) handleBlockedMonitoring(ctx context.Context, device *storage.Device, currentTime time.Time, result *TransitionResult) (*TransitionResult, error) {
 	mac := device.MAC
 
+	// Check if monitoring window expired (>5min since block_start)
+	// If so, reset the window - this is a normal SD boot requesting boot.sig
+	if device.BlockStart != nil {
+		elapsed := currentTime.Sub(*device.BlockStart)
+		if elapsed >= m.monitoringWindow {
+			m.logger.Info("monitoring window expired - resetting",
+				"mac", mac,
+				"elapsed", elapsed,
+				"window", m.monitoringWindow)
+
+			// Cleanup old 404 events for this MAC (on-request cleanup)
+			windowStart := currentTime.Add(-m.monitoringWindow)
+			m.store.Cleanup404EventsForMAC(ctx, mac, windowStart)
+
+			// Reset the monitoring window
+			device.BlockStart = &currentTime
+			device.Error404Count = 0
+		}
+	}
+
 	// Add 404 event
 	if err := m.store.Add404Event(ctx, mac, currentTime); err != nil {
 		return nil, err
@@ -92,7 +112,7 @@ func (m *Machine) handleBlockedMonitoring(ctx context.Context, device *storage.D
 		"threshold", m.failureThreshold,
 		"state", device.State.String())
 
-	// Check if failure threshold reached
+	// Check if failure threshold reached (3x 404 in <5min = SD failure)
 	if count >= m.failureThreshold {
 		m.logSeparator()
 		m.logger.Error("SD boot failure detected (watchdog loop)",
@@ -110,6 +130,9 @@ func (m *Machine) handleBlockedMonitoring(ctx context.Context, device *storage.D
 		device.Error404Count = 0
 		device.FlashComplete = false
 
+		// Cleanup 404 events for this MAC
+		m.store.Cleanup404EventsForMAC(ctx, mac, currentTime)
+
 		if err := m.store.UpdateDevice(ctx, device); err != nil {
 			return nil, err
 		}
@@ -120,36 +143,7 @@ func (m *Machine) handleBlockedMonitoring(ctx context.Context, device *storage.D
 		return result, nil
 	}
 
-	// Check if monitoring window expired with only 1 404 (success)
-	if device.BlockStart != nil {
-		elapsed := currentTime.Sub(*device.BlockStart)
-		if elapsed >= m.monitoringWindow && count == 1 {
-			m.logSeparator()
-			m.logger.Info("SD boot successful",
-				"mac", mac,
-				"elapsed", elapsed,
-				"window", m.monitoringWindow)
-			m.logger.Info("Transition: BLOCKED_MONITORING -> BLOCKED_PERMANENT",
-				"mac", mac,
-				"reason", "HTTP boot stays disabled")
-			m.logSeparator()
-
-			// Transition to BLOCKED_PERMANENT
-			device.State = BlockedPermanent
-			device.BlockStart = nil
-
-			if err := m.store.UpdateDevice(ctx, device); err != nil {
-				return nil, err
-			}
-
-			result.NewState = BlockedPermanent
-			result.Transitioned = true
-			result.Message = "SD boot successful - permanently blocked"
-			return result, nil
-		}
-	}
-
-	// Just update the count
+	// Just update the device
 	if err := m.store.UpdateDevice(ctx, device); err != nil {
 		return nil, err
 	}

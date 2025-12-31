@@ -16,8 +16,9 @@ Optimisé pour gérer 200-500 Raspberry Pi simultanément.
 6. [Configuration](#configuration)
 7. [Endpoints HTTP](#endpoints-http)
 8. [Structure du Projet](#structure-du-projet)
-9. [Logs et Monitoring](#logs-et-monitoring)
-10. [Dépannage](#dépannage)
+9. [Signature des Fichiers](#signature-des-fichiers)
+10. [Logs et Monitoring](#logs-et-monitoring)
+11. [Dépannage](#dépannage)
 
 ---
 
@@ -92,10 +93,10 @@ E4:5F:01:XX:XX:XX
 
 ```bash
 # Voir la whitelist actuelle
-cat /home/pi/minilinux-server-go/mac_whitelist.txt
+cat /minilinux-server-go/mac_whitelist.txt
 
 # Ajouter une MAC
-echo "AA:BB:CC:DD:EE:FF" >> /home/pi/minilinux-server-go/mac_whitelist.txt
+echo "AA:BB:CC:DD:EE:FF" >> /minilinux-server-go/mac_whitelist.txt
 
 # La whitelist est rechargée automatiquement toutes les 60 secondes
 # Pas besoin de redémarrer le serveur
@@ -110,7 +111,7 @@ Le serveur utilise SQLite pour stocker l'état de chaque device.
 ### Accéder à la BDD
 
 ```bash
-sqlite3 /home/pi/minilinux-server-go/devices.db
+sqlite3 /minilinux-server-go/devices.db
 ```
 
 ### Commandes SQLite utiles
@@ -284,7 +285,7 @@ sudo systemctl restart minilinux-server-go  # Redémarrer
 | Variable | Défaut | Description |
 |----------|--------|-------------|
 | `SERVER_PORT` | 8080 | Port d'écoute HTTP |
-| `SERVE_DIRECTORY` | /home/pi/minilinux-server-go | Répertoire des fichiers |
+| `SERVE_DIRECTORY` | /minilinux-server-go | Répertoire des fichiers |
 | `DATABASE_PATH` | {SERVE_DIRECTORY}/devices.db | Chemin base SQLite |
 | `WHITELIST_FILE` | {SERVE_DIRECTORY}/mac_whitelist.txt | Fichier whitelist |
 | `MONITORING_WINDOW` | 5m | Fenêtre de surveillance post-flash |
@@ -330,7 +331,7 @@ sudo systemctl restart minilinux-server-go  # Redémarrer
 ## Structure du Projet
 
 ```
-/home/pi/minilinux-server-go/
+/minilinux-server-go/
 ├── boot.img                    # Image de boot (~100 MB)
 ├── boot.sig                    # Signature RSA du boot
 ├── mac_whitelist.txt           # Liste MACs autorisées
@@ -355,6 +356,60 @@ sudo systemctl restart minilinux-server-go  # Redémarrer
     ├── go.mod
     ├── go.sum
     └── Makefile
+```
+
+---
+
+## Signature des Fichiers
+
+Le serveur vérifie les signatures RSA pour garantir l'intégrité des fichiers.
+
+### Clés RSA
+
+Les clés RSA doivent être présentes dans le répertoire du serveur :
+- `bootkey-private.pem` - Clé privée (pour signer)
+- `bootkey-public.pem` - Clé publique (pour vérifier sur le Pi)
+
+### Signer boot.img
+
+```bash
+# Signer l'image de boot avec rpi-eeprom-digest
+rpi-eeprom-digest -i boot.img -o boot.sig -k bootkey-private.pem
+```
+
+**Fichiers générés :**
+- `boot.sig` - Signature RSA du boot (servie par le serveur)
+
+### Signer final_image.img.xz
+
+```bash
+cd /minilinux-server-go
+
+# 1. Calculer le hash SHA256 de l'image
+sha256sum images/final_image.img.xz | awk '{print $1}' > images/hash.txt
+
+# 2. Signer le hash avec la clé privée
+openssl dgst -sha256 -sign bootkey-private.pem -out images/final_image.sig images/hash.txt
+```
+
+**Fichiers générés :**
+- `images/hash.txt` - Hash SHA256 de l'image
+- `images/final_image.sig` - Signature RSA du hash (servie par le serveur)
+
+### Re-signer après modification
+
+À chaque fois que vous modifiez `boot.img` ou `final_image.img.xz`, vous devez re-signer :
+
+```bash
+# Re-signer boot.img
+rpi-eeprom-digest -i boot.img -o boot.sig -k bootkey-private.pem
+
+# Re-signer final_image.img.xz
+sha256sum images/final_image.img.xz | awk '{print $1}' > images/hash.txt
+openssl dgst -sha256 -sign bootkey-private.pem -out images/final_image.sig images/hash.txt
+
+# Redémarrer le serveur pour prendre en compte les nouvelles signatures
+sudo systemctl restart minilinux-server-go
 ```
 
 ---
@@ -426,10 +481,10 @@ Le serveur utilise `/proc/net/arp` pour résoudre IP → MAC. Si le Pi n'a pas e
 
 ```bash
 # Sauvegarder
-cp /home/pi/minilinux-server-go/devices.db /home/pi/minilinux-server-go/devices.db.bak
+cp /minilinux-server-go/devices.db /minilinux-server-go/devices.db.bak
 
 # Supprimer et laisser le serveur recréer
-rm /home/pi/minilinux-server-go/devices.db
+rm /minilinux-server-go/devices.db
 sudo systemctl restart minilinux-server-go
 ```
 
