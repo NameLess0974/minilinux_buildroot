@@ -31,44 +31,50 @@ Le serveur gère automatiquement le cycle de vie de chaque Raspberry Pi via une 
 | État | Description | Réponse HTTP pour boot.sig/boot.img |
 |------|-------------|-------------------------------------|
 | `ALLOWED` (0) | Device autorisé à télécharger | **200 OK** - Sert les fichiers |
-| `BLOCKED_MONITORING` (1) | Post-flash, surveillance 5 min | **404** - Force boot SD |
-| `BLOCKED_PERMANENT` (2) | Flash confirmé réussi | **404** - Permanent |
+| `BLOCKED_MONITORING` (1) | Post-flash, surveillance active | **404** - Force boot SD |
+
+**Note :** La logique est basée sur les requêtes (lazy evaluation), sans timer en background.
 
 ### Exemple Concret avec MAC `2C:CF:67:87:2B:EC`
 
-**Scénario 1 : Premier flash réussi**
+**Scénario 1 : Premier flash - Boot SD stable**
 ```
 1. Pi démarre en boot réseau → GET /boot.sig
 2. MAC inconnue → Création état ALLOWED
 3. Serveur répond 200 OK, sert boot.sig puis boot.img
 4. Pi télécharge l'image, vérifie signature, flash la SD
 5. Pi envoie → GET /confirm/2C:CF:67:87:2B:EC?status=success
-6. Serveur → État passe à BLOCKED_MONITORING (timer 5 min)
-7. Pi reboot sur la SD card
-8. ... 5 minutes passent sans requête HTTP ...
-9. Serveur → État passe à BLOCKED_PERMANENT (succès confirmé)
+6. Serveur → État passe à BLOCKED_MONITORING (timestamp initial)
+7. Pi reboot sur la SD card (boot SD réussit)
+8. 30s après : Pi demande → GET /boot.sig (ordre EEPROM: HTTP puis SD)
+9. Serveur → 404 (compteur 1/3, <5min depuis timestamp)
+10. Pi continue sur SD → Fonctionne normalement
+11. Prochain reboot (ex: 3h après) → GET /boot.sig
+12. Serveur détecte >5min → Reset timestamp, compteur reste à 1/3
+13. État reste en BLOCKED_MONITORING (surveillance continue)
 ```
 
-**Scénario 2 : Échec du boot SD (watchdog)**
+**Scénario 2 : Échec du boot SD (watchdog loop)**
 ```
 1. Pi est en BLOCKED_MONITORING après flash
-2. Boot SD échoue → Watchdog → Reboot → Boot réseau
-3. Pi demande → GET /boot.sig → Reçoit 404 (1ère)
-4. Pi reboot → GET /boot.sig → 404 (2ème)
-5. Pi reboot → GET /boot.sig → 404 (3ème)
-6. Serveur détecte 3x 404 en 5 min → ÉCHEC SD
-7. État revient à ALLOWED
-8. Prochain boot → Re-flash automatique
+2. Boot SD échoue → Watchdog déclenche reboot → Boot réseau
+3. Pi demande → GET /boot.sig → Reçoit 404 (compteur: 1/3)
+4. Watchdog → Reboot → GET /boot.sig → 404 (compteur: 2/3)
+5. Watchdog → Reboot → GET /boot.sig → 404 (compteur: 3/3)
+6. Serveur détecte 3x 404 en <5 min → ÉCHEC SD détecté
+7. État passe à ALLOWED, compteur reset
+8. Prochain boot → 200 OK → Re-flash automatique
 ```
 
-**Scénario 3 : Crash après période stable**
+**Scénario 3 : Requête après longue période**
 ```
-1. Pi est en BLOCKED_PERMANENT (stable depuis des jours)
-2. Crash ou corruption SD → Reboot → Boot réseau
-3. Pi demande → GET /boot.sig → 404
-4. Serveur détecte nouvelle requête après période stable
-5. État passe à BLOCKED_MONITORING (nouvelle surveillance)
-6. Si 3x 404 en 5 min → Retour ALLOWED → Re-flash
+1. Pi en BLOCKED_MONITORING stable depuis des jours
+2. Pi reboot (maintenance, crash, etc.) → Boot réseau
+3. Pi demande → GET /boot.sig
+4. Serveur détecte timestamp >5min → Reset monitoring window
+5. 404 envoyé (compteur: 1/3), nouveau timestamp
+6. Si vraiment cassé : 3x 404 rapides → ALLOWED → Re-flash
+7. Si juste un reboot normal : reste en MONITORING (1/3)
 ```
 
 ---
