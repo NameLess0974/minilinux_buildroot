@@ -1,0 +1,39 @@
+# Binaires compilés
+go/build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Base de données SQLite (générée automatiquement)
+devices.db
+devices.db-shm
+devices.db-wal
+*.db-journal
+
+# Images volumineuses (non versionnées)
+boot.img
+*.img
+*.img.xz
+
+# Fichiers Go
+*.test
+*.out
+go/vendor/
+
+# Fichiers temporaires
+*.tmp
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+
+# IDE / Éditeurs
+.vscode/
+.idea/
+*.iml
+
+# Backup files
+*.bak
+*.backup

@@ -1,0 +1,32 @@
+[Unit]
+Description=HTTP Boot Server with SD Fallback Detection (Go)
+After=network.target
+Conflicts=minilinux-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/pi/minilinux-server-go
+ExecStart=/usr/local/bin/minilinux-server-go
+Restart=always
+RestartSec=5
+
+# Environment variables (optional overrides)
+Environment=SERVER_PORT=8080
+Environment=SERVE_DIRECTORY=/home/pi/minilinux-server-go
+Environment=DATABASE_PATH=/home/pi/minilinux-server-go/devices.db
+Environment=WHITELIST_FILE=/home/pi/minilinux-server-go/mac_whitelist.txt
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minilinux-server
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/minilinux-server-go
+
+[Install]
+WantedBy=multi-user.target
