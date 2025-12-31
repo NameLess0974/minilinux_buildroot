@@ -278,6 +278,53 @@ download_signature() {
 }
 
 
+# === CONFIRMATION AU SERVEUR ===
+
+get_mac_address() {
+    # Recuperer la MAC de l'interface principale
+    local mac
+    mac=$(ip link show eth0 2>/dev/null | grep ether | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
+    if [ -z "$mac" ]; then
+        mac=$(ip link 2>/dev/null | grep ether | head -1 | awk '{print $2}' | tr '[:lower:]' '[:upper:]')
+    fi
+    echo "$mac"
+}
+
+send_confirmation() {
+    local status="$1"      # success ou error
+    local error_code="$2"  # optionnel: signature_invalid, download_failed, etc.
+    local server_base="http://172.16.1.226:8080"
+    
+    local mac
+    mac=$(get_mac_address)
+    
+    if [ -z "$mac" ]; then
+        log_warn "Impossible de determiner la MAC address"
+        mac="UNKNOWN"
+    fi
+    
+    local url="${server_base}/confirm/${mac}?status=${status}"
+    if [ -n "$error_code" ]; then
+        url="${url}&code=${error_code}"
+    fi
+    
+    log "Envoi confirmation au serveur: status=${status} code=${error_code:-none}"
+    log "URL: $url"
+    
+    # Essayer curl puis wget
+    local response
+    if response=$(curl -f -s --connect-timeout 10 --max-time 30 "$url" 2>/dev/null); then
+        log "Confirmation envoyee: $response"
+        return 0
+    elif response=$(wget -q -O - --timeout=30 "$url" 2>/dev/null); then
+        log "Confirmation envoyee (wget): $response"
+        return 0
+    else
+        log_warn "Echec envoi confirmation (non bloquant)"
+        return 1
+    fi
+}
+
 do_reboot() {
     local delay="${1:-3}"
 
@@ -353,12 +400,19 @@ main() {
             if verify_signature "${sig_file}" "${hash_file}" "${PUBLIC_KEY}"; then
                 log_section "SIGNATURE VALIDE - INSTALLATION REUSSIE"
 
+                # Confirmer au serveur que tout est OK
+                send_confirmation "success"
+
                 # Cleanup
                 rm -f "${sig_file}" "${hash_file}"
 
                 do_reboot 5
             else
                 log_section "SIGNATURE INVALIDE - WIPE ET RETRY"
+                
+                # Signaler l'erreur au serveur
+                send_confirmation "error" "signature_invalid"
+                
                 wipe_device "${TARGET_DEVICE}"
                 rm -f "${sig_file}" "${hash_file}"
                 sleep $RETRY_DELAY
@@ -366,6 +420,10 @@ main() {
             fi
         else
             log_error "Flash echoue - retry dans ${RETRY_DELAY}s"
+            
+            # Signaler l'erreur au serveur
+            send_confirmation "error" "download_failed"
+            
             sleep $RETRY_DELAY
             continue
         fi
