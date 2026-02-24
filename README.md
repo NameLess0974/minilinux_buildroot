@@ -63,6 +63,31 @@ buildroot/board/raspberrypi/overlay/etc/systemd/system/auto-installer.service
 buildroot/board/raspberrypi/overlay/usr/local/bin/auto-installer.sh
 ```
 
+### Splash screen (GIF via framebuffer)
+
+Le splash screen est un binaire C statique (fb_gif) qui lit un GIF et l'affiche
+directement sur /dev/fb0 sans aucune dependance graphique.
+
+Fichiers concernes :
+```
+buildroot/board/raspberrypi/overlay/usr/local/bin/fb_gif       # binaire
+buildroot/board/raspberrypi/overlay/usr/share/splash/loading.gif  # animation
+buildroot/board/raspberrypi/overlay/etc/systemd/system/splash-screen.service  # service
+```
+
+Pour mettre a jour le GIF ou le binaire :
+```bash
+# Copier le GIF
+cp fb_gif/loading.gif buildroot/board/raspberrypi/overlay/usr/share/splash/loading.gif
+
+# Copier le binaire (si recompile)
+cp fb_gif/fb_gif buildroot/board/raspberrypi/overlay/usr/local/bin/fb_gif
+chmod +x buildroot/board/raspberrypi/overlay/usr/local/bin/fb_gif
+```
+
+Source du binaire : dossier fb_gif/ a la racine du projet (main.c + stb_image.h).
+Pour recompiler : cd fb_gif && make (necessite un cross-compilateur aarch64).
+
 ### Kernel & Boot
 ```
 buildroot/.config                                                    # Config Buildroot
