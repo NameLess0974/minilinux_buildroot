@@ -5,7 +5,7 @@ scp pieeprom-final.bin pi@ip:~/
 sudo rpi-eeprom-config --config boot.conf --pubkey bootkey-public.pem --out pieeprom-modifier.bin pieeprom-base.bin
  
 # 2. Sur le nouveau Pi, flasher l'EEPROM
-sudo rpi-eeprom-update -d -f pieeprom-final.bin
+sudo rpi-eeprom-update -d -f pieeprom-modifier.bin
 
 # 3. Redémarrer
 sudo reboot
