@@ -70,6 +70,41 @@ buildroot/board/raspberrypi-system-update/cmdline-rpi-system-update.txt  # Param
 buildroot/board/raspberrypi-system-update/config-rpi-system-update.txt   # Config firmware
 ```
 
+### Affichage des logs au boot (cmdline)
+
+Le fichier a modifier est :
+```
+buildroot/board/raspberrypi-system-update/cmdline-rpi-system-update.txt
+```
+
+Apres modification, forcer la regeneration du paquet rpi-firmware avant de rebuilder :
+```bash
+cd buildroot
+make rpi-firmware-reinstall && make
+```
+
+**Logs kernel caches (ecran noir puis GIF) :**
+```
+rootwait console=tty3 quiet splash loglevel=0 logo.nologo vt.global_cursor_default=0 root=/dev/ram0
+```
+
+**Logs kernel visibles (mode debug) :**
+```
+rootwait console=tty0 console=serial0,115200 root=/dev/ram0
+```
+
+Description des parametres :
+```
+console=tty3          redirige les logs vers tty3 (invisible a l'ecran)
+quiet                 supprime les messages non critiques du kernel
+splash                active le mode splash (ecran propre)
+loglevel=0            desactive tous les messages kernel
+logo.nologo           supprime les icones de framboise en haut a gauche
+vt.global_cursor_default=0   cache le curseur clignotant
+console=tty0          affiche les logs sur l'ecran principal (mode debug)
+console=serial0,115200       affiche les logs sur le port serie UART
+```
+
 ## Certificats & Clés
 
 ### Clés SSH

@@ -4,7 +4,7 @@
 # Version streaming avec verification signature RSA
 
 # Configuration
-BASE_URL="http://172.16.1.226:8080/images"
+BASE_URL="http://bootloader.sabsystem.com:8080/images"
 IMAGE_URL="${BASE_URL}/final_image.img.xz"
 SIG_URL="${BASE_URL}/final_image.sig"
 TARGET_DEVICE="/dev/mmcblk0"
@@ -66,8 +66,8 @@ check_network() {
     ip_info=$(ip -4 addr show scope global 2>/dev/null | grep inet | head -1)
     [ -n "$ip_info" ] && log "IP: $ip_info"
 
-    if ping -c 1 -W 3 172.16.1.226 >/dev/null 2>&1; then
-        log "Connectivite serveur local: OK"
+    if ping -c 1 -W 3 bootloader.sabsystem.com >/dev/null 2>&1; then
+        log "Connectivite serveur: OK"
         return 0
     fi
 
@@ -293,7 +293,7 @@ get_mac_address() {
 send_confirmation() {
     local status="$1"      # success ou error
     local error_code="$2"  # optionnel: signature_invalid, download_failed, etc.
-    local server_base="http://172.16.1.226:8080"
+    local server_base="http://bootloader.sabsystem.com:8080"
     
     local mac
     mac=$(get_mac_address)

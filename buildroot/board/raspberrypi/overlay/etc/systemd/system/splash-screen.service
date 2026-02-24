@@ -1,0 +1,15 @@
+[Unit]
+Description=Splash Screen Animation
+DefaultDependencies=no
+After=systemd-vconsole-setup.service
+Before=auto-installer.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fb_gif /usr/share/splash/loading.gif
+StandardOutput=null
+StandardError=null
+Restart=always
+
+[Install]
+WantedBy=sysinit.target
