@@ -234,6 +234,62 @@ int main(int argc, char *argv[]) {
     // Effacer complètement l'écran (fond noir) pour cacher les restes du terminal
     memset(fbp, 0, screensize);
 
+    // === PRE-CACHE DES TEXTURES DE POURCENTAGE (0% a 100%) ===
+    // Rendu TTF une seule fois au demarrage dans 101 mini-buffers
+    // Chaque frame : blit instantane (memcpy) sans rasterization TTF
+    #define TEXT_CACHE_W 400
+    #define TEXT_CACHE_H 100
+    int bpp_bytes = vinfo.bits_per_pixel / 8;
+    int cache_stride = TEXT_CACHE_W * bpp_bytes;
+    int cache_size   = TEXT_CACHE_W * TEXT_CACHE_H * bpp_bytes;
+
+    // Simuler un mini-framebuffer pour draw_text_ttf
+    struct fb_var_screeninfo cache_vinfo = vinfo;
+    cache_vinfo.xres = TEXT_CACHE_W;
+    cache_vinfo.yres = TEXT_CACHE_H;
+    cache_vinfo.xoffset = 0;
+    cache_vinfo.yoffset = 0;
+    struct fb_fix_screeninfo cache_finfo = finfo;
+    cache_finfo.line_length = cache_stride;
+
+    // Allouer 101 buffers (un par valeur de 0% a 100%)
+    unsigned char *text_cache[101];
+    for (int p = 0; p <= 100; p++) {
+        text_cache[p] = (unsigned char *)calloc(1, cache_size);
+        if (!text_cache[p]) continue;
+
+        // Fond noir
+        memset(text_cache[p], 0, cache_size);
+        // Mettre l'alpha a 255 en 32bpp
+        if (vinfo.bits_per_pixel == 32) {
+            for (int i = 3; i < cache_size; i += 4)
+                text_cache[p][i] = 255;
+        }
+
+        // Mesurer la largeur du texte pour centrer dans le cache
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%d%%", p);
+        int tw = 0;
+        if (ttf_buffer) {
+            for (int i = 0; buf[i]; i++) {
+                int adv, lsb;
+                stbtt_GetCodepointHMetrics(&font_info, buf[i], &adv, &lsb);
+                tw += (int)(adv * font_scale);
+            }
+        } else { tw = 100; }
+
+        int cache_tx = (TEXT_CACHE_W - tw) / 2;
+        draw_text_ttf(cache_tx, 10, buf, 255, 255, 255,
+                      (char *)text_cache[p], &cache_vinfo, &cache_finfo);
+    }
+
+    // Position fixe du texte : 120px du bas de l'ecran
+    int text_ty   = (int)vinfo.yres - 120;
+    int text_blit_x = ((int)vinfo.xres - TEXT_CACHE_W) / 2;
+    if (text_ty < 0)     text_ty = 0;
+    if (text_blit_x < 0) text_blit_x = 0;
+    // ==========================================================
+
     // 4. Boucle d'animation
     int percent = 0;
     while (1) {
@@ -268,29 +324,21 @@ int main(int argc, char *argv[]) {
                 }
             }
 
-            // Affichage du pourcentage en police lisse TTF (en blanc)
-            char buf[16];
-            snprintf(buf, sizeof(buf), "%d%%", percent);
-            
-            int tx = 0, text_w = 0;
-            if (ttf_buffer) {
-                // Mesurer la largeur précise pour bien centrer
-                for (int i=0; buf[i]; i++) {
-                    int adv, lsb;
-                    stbtt_GetCodepointHMetrics(&font_info, buf[i], &adv, &lsb);
-                    text_w += (int)(adv * font_scale);
+            // === BLIT DU CACHE TEXTE (ultra-rapide, remplace le rendu TTF par frame) ===
+            // On blitte le buffer pre-rendu du % courant directement dans le framebuffer
+            // Cout : TEXT_CACHE_H memcpy de TEXT_CACHE_W pixels = microsecondes
+            if (percent >= 0 && percent <= 100 && text_cache[percent]) {
+                for (int cy = 0; cy < TEXT_CACHE_H; cy++) {
+                    int screen_y = text_ty + cy;
+                    if (screen_y < 0 || screen_y >= (int)vinfo.yres) continue;
+                    long int fb_off = (long int)(text_blit_x + vinfo.xoffset) * bpp_bytes
+                                    + (long int)(screen_y  + vinfo.yoffset)  * finfo.line_length;
+                    int cache_off = cy * cache_stride;
+                    memcpy(fbp + fb_off, text_cache[percent] + cache_off,
+                           TEXT_CACHE_W * bpp_bytes);
                 }
-            } else {
-                text_w = 100;
             }
-
-            tx = (vinfo.xres - text_w) / 2;
-            int ty = start_y + h - 130 - (int)(vinfo.yres * 0.10); // Ajustement : 10% plus haut (donc 10% plus bas qu'avant)
-            if (ty > (int)vinfo.yres - 80) ty = vinfo.yres - 80; // Ne pas déborder de l'écran bas
-            if (ty < 80) ty = 80; // Ne pas déborder de l'écran haut
-
-            // Rendu en blanc anti-aliasing
-            draw_text_ttf(tx, ty, buf, 255, 255, 255, fbp, &vinfo, &finfo);
+            // =====================================================================
 
             // Lire le pourcentage réel depuis /tmp/progress (écrit par auto-installer.sh)
             {
