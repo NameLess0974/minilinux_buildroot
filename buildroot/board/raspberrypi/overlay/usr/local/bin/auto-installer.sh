@@ -11,6 +11,11 @@ TARGET_DEVICE="/dev/mmcblk0"
 PUBLIC_KEY="/etc/keys/bootkey-public.pem"
 MAX_RETRIES=3
 RETRY_DELAY=30
+PROGRESS_FILE="/tmp/progress"
+# Fallback si le HEAD request echoue (en bytes, taille decompressée estimée)
+DEFAULT_IMAGE_BYTES=3200000000
+# Ratio de decompression xz typique pour les images OS Linux (4-8x selon l'image)
+XZ_DECOMP_RATIO=5
 
 # === LOGGING ===
 log() {
@@ -35,6 +40,36 @@ log_section() {
     log "=================================================="
     log "$*"
     log "=================================================="
+}
+
+# Ecrire le pourcentage d'avancement dans le fichier de progression
+# Lu par fb_gif (main.c) pour mettre a jour l'affichage framebuffer
+set_progress() {
+    echo "$1" > "${PROGRESS_FILE}"
+}
+
+# Obtenir dynamiquement la taille decompressée de l'image
+# Fait un HEAD request pour lire Content-Length du .xz, multiplie par XZ_DECOMP_RATIO
+# Fallback sur DEFAULT_IMAGE_BYTES si le serveur ne repond pas
+get_estimated_size() {
+    local url="$1"
+    local compressed_bytes=0
+
+    log "Estimation taille image (HEAD request sur $url)..."
+
+    compressed_bytes=$(curl -sI --connect-timeout 10 --max-time 15 "$url" 2>/dev/null \
+        | grep -i '^content-length:' \
+        | awk '{print $2}' \
+        | tr -d '\r\n')
+
+    if [ -n "${compressed_bytes}" ] && [ "${compressed_bytes}" -gt 0 ] 2>/dev/null; then
+        local estimated=$(( compressed_bytes * XZ_DECOMP_RATIO ))
+        log "Taille .xz: ${compressed_bytes} bytes | Estimee decompressee: ${estimated} bytes (ratio x${XZ_DECOMP_RATIO})"
+        echo "${estimated}"
+    else
+        log "HEAD request sans Content-Length, fallback: ${DEFAULT_IMAGE_BYTES} bytes"
+        echo "${DEFAULT_IMAGE_BYTES}"
+    fi
 }
 
 # === FONCTIONS UTILITAIRES ===
@@ -148,6 +183,22 @@ stream_and_flash() {
     local dd_err="/tmp/dd_err.log"
     rm -f "$curl_err" "$xz_err" "$dd_err"
 
+    # --- MONITOR DE PROGRESSION TIME-BASED (25% -> 65%) ---
+    # +1% toutes les 15s, bloque a 65% jusqu'a la fin du pipeline
+    # Un seul processus background, aucun impact sur la pipeline
+    (
+        pct=25
+        while [ "${pct}" -lt 65 ]; do
+            sleep 15
+            pct=$(( pct + 1 ))
+            echo "${pct}" > "${PROGRESS_FILE}"
+        done
+        # Bloque ici a 65% jusqu'a ce qu'on soit tue (pipeline terminee)
+        while true; do sleep 60; done
+    ) &
+    local flash_monitor_pid=$!
+    # -------------------------------------------------------
+
     log "Lancement pipeline streaming..."
 
     # Pipeline avec tee pour calculer le hash du fichier compresse
@@ -159,7 +210,7 @@ stream_and_flash() {
     (sha256sum < "$fifo" | awk '{print $1}' > "$hash_file") &
     local sha_pid=$!
 
-    # Pipeline principal
+    # Pipeline principal - IDENTIQUE A L'ORIGINAL (curl -> tee -> xz -> dd)
     curl -f -L -S \
         --connect-timeout 30 \
         --max-time 1800 \
@@ -173,6 +224,10 @@ stream_and_flash() {
     local tee_exit=${pipe_status[1]}
     local xz_exit=${pipe_status[2]}
     local dd_exit=${pipe_status[3]}
+
+    # Pipeline terminee - arreter le monitor time-based
+    kill "${flash_monitor_pid}" 2>/dev/null
+    wait "${flash_monitor_pid}" 2>/dev/null
 
     # Attendre que sha256sum finisse
     wait $sha_pid
@@ -348,6 +403,7 @@ main() {
     local hash_file="/tmp/image_hash.txt"
 
     log_section "AUTO-INSTALLER RPI OS - DEMARRAGE"
+    set_progress 0
     log "PID: $$ | PPID: $PPID"
     log "Date: $(date)"
     log "Target: ${TARGET_DEVICE}"
@@ -361,6 +417,7 @@ main() {
         log_error "Device non disponible - reboot"
         do_reboot 60
     fi
+    set_progress 5
 
     while [ $retry_count -lt $MAX_RETRIES ]; do
         retry_count=$((retry_count + 1))
@@ -371,6 +428,7 @@ main() {
             sleep $RETRY_DELAY
             continue
         fi
+        set_progress 10
 
         # Telecharger la signature d'abord
         if ! download_signature "${SIG_URL}" "${sig_file}"; then
@@ -378,12 +436,14 @@ main() {
             sleep $RETRY_DELAY
             continue
         fi
+        set_progress 20
 
         safe_release_device "${TARGET_DEVICE}"
 
         local start_time
         start_time=$(date +%s)
 
+        set_progress 25
         # Streaming + flash avec calcul hash
         if stream_and_flash "${IMAGE_URL}" "${TARGET_DEVICE}"; then
             local end_time duration
@@ -394,18 +454,22 @@ main() {
             sync
             sleep 2
 
+            set_progress 90
             log "Duree flash: ${duration} secondes"
 
             # Verifier la signature RSA
             if verify_signature "${sig_file}" "${hash_file}" "${PUBLIC_KEY}"; then
                 log_section "SIGNATURE VALIDE - INSTALLATION REUSSIE"
+                set_progress 92
 
                 # Confirmer au serveur que tout est OK
                 send_confirmation "success"
+                set_progress 95
 
                 # Cleanup
                 rm -f "${sig_file}" "${hash_file}"
 
+                set_progress 100
                 do_reboot 5
             else
                 log_section "SIGNATURE INVALIDE - WIPE ET RETRY"
