@@ -179,6 +179,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Allocation du back buffer pour double-buffering evitant les clignotements
+    char *back_buf = (char *)malloc(screensize);
+    if (!back_buf) {
+        perror("Erreur : alloc back_buf");
+        munmap(fbp, screensize);
+        close(fbfd);
+        return 1;
+    }
+
     // Charger la police TTF - chemin absolu pour fonctionner depuis n'importe quel CWD (service systemd)
     if (access("/usr/share/splash/font.ttf", R_OK) == 0) {
         init_font("/usr/share/splash/font.ttf", 60.0f);
@@ -233,6 +242,7 @@ int main(int argc, char *argv[]) {
 
     // Effacer complètement l'écran (fond noir) pour cacher les restes du terminal
     memset(fbp, 0, screensize);
+    memset(back_buf, 0, screensize);
 
     // === PRE-CACHE DES TEXTURES DE POURCENTAGE (0% a 100%) ===
     // Rendu TTF une seule fois au demarrage dans 101 mini-buffers
@@ -313,20 +323,19 @@ int main(int argc, char *argv[]) {
                     if (a < 128) continue; 
 
                     if (vinfo.bits_per_pixel == 32) {
-                        *(fbp + location) = b;     // B
-                        *(fbp + location + 1) = g; // G
-                        *(fbp + location + 2) = r; // R
-                        *(fbp + location + 3) = a; // A
+                        *(back_buf + location) = b;     // B
+                        *(back_buf + location + 1) = g; // G
+                        *(back_buf + location + 2) = r; // R
+                        *(back_buf + location + 3) = a; // A
                     } else if (vinfo.bits_per_pixel == 16) {
                         unsigned short c = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-                        *((unsigned short*)(fbp + location)) = c;
+                        *((unsigned short*)(back_buf + location)) = c;
                     }
                 }
             }
 
             // === BLIT DU CACHE TEXTE (ultra-rapide, remplace le rendu TTF par frame) ===
-            // On blitte le buffer pre-rendu du % courant directement dans le framebuffer
-            // Cout : TEXT_CACHE_H memcpy de TEXT_CACHE_W pixels = microsecondes
+            // On blitte le buffer pre-rendu du % courant directement dans le back buffer
             if (percent >= 0 && percent <= 100 && text_cache[percent]) {
                 for (int cy = 0; cy < TEXT_CACHE_H; cy++) {
                     int screen_y = text_ty + cy;
@@ -334,11 +343,15 @@ int main(int argc, char *argv[]) {
                     long int fb_off = (long int)(text_blit_x + vinfo.xoffset) * bpp_bytes
                                     + (long int)(screen_y  + vinfo.yoffset)  * finfo.line_length;
                     int cache_off = cy * cache_stride;
-                    memcpy(fbp + fb_off, text_cache[percent] + cache_off,
+                    memcpy(back_buf + fb_off, text_cache[percent] + cache_off,
                            TEXT_CACHE_W * bpp_bytes);
                 }
             }
             // =====================================================================
+
+            // === DOUBLE BUFFERING : Envoi du back buffer vers l'écran ===
+            // L'écran ne verra jamais le GIF sans le texte
+            memcpy(fbp, back_buf, screensize);
 
             // Lire le pourcentage réel depuis /tmp/progress (écrit par auto-installer.sh)
             {
@@ -357,9 +370,13 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    for (int p = 0; p <= 100; p++) {
+        if (text_cache[p]) free(text_cache[p]);
+    }
     stbi_image_free(pixels);
     if(delays) stbi_image_free(delays);
     if(ttf_buffer) free(ttf_buffer);
+    free(back_buf);
     munmap(fbp, screensize);
     close(fbfd);
     
