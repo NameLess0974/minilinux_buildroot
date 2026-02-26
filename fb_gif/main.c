@@ -190,9 +190,9 @@ int main(int argc, char *argv[]) {
 
     // Charger la police TTF - chemin absolu pour fonctionner depuis n'importe quel CWD (service systemd)
     if (access("/usr/share/splash/font.ttf", R_OK) == 0) {
-        init_font("/usr/share/splash/font.ttf", 60.0f);
+        init_font("/usr/share/splash/font.ttf", 72.0f);
     } else {
-        init_font("font.ttf", 60.0f); // fallback pour tests locaux
+        init_font("font.ttf", 72.0f); // fallback pour tests locaux
     }
 
     // 3. Charger le GIF
@@ -293,8 +293,8 @@ int main(int argc, char *argv[]) {
                       (char *)text_cache[p], &cache_vinfo, &cache_finfo);
     }
 
-    // Position fixe du texte : 120px du bas de l'ecran
-    int text_ty   = (int)vinfo.yres - 120;
+    // Position fixe du texte : au centre + 12% plus bas
+    int text_ty   = ((int)vinfo.yres - TEXT_CACHE_H) / 2 + (int)(vinfo.yres * 0.12f);
     int text_blit_x = ((int)vinfo.xres - TEXT_CACHE_W) / 2;
     if (text_ty < 0)     text_ty = 0;
     if (text_blit_x < 0) text_blit_x = 0;
