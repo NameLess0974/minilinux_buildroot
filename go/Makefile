@@ -45,7 +45,7 @@ run: build
 # Run with environment variables
 run-dev:
 	@echo "Running in development mode..."
-	SERVE_DIRECTORY=/home/pi/minilinux-server-go $(GOCMD) run ./cmd/server
+	SERVE_DIRECTORY=/home/sabuser/minilinux_buildroot $(GOCMD) run ./cmd/server
 
 # Clean build artifacts
 clean:

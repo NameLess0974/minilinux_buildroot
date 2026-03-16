@@ -6,16 +6,16 @@ Conflicts=minilinux-server.service
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/pi/minilinux-server-go
+WorkingDirectory=/home/sabuser/minilinux_buildroot
 ExecStart=/usr/local/bin/minilinux-server-go
 Restart=always
 RestartSec=5
 
 # Environment variables (optional overrides)
-Environment=SERVER_PORT=8080
-Environment=SERVE_DIRECTORY=/home/pi/minilinux-server-go
-Environment=DATABASE_PATH=/home/pi/minilinux-server-go/devices.db
-Environment=WHITELIST_FILE=/home/pi/minilinux-server-go/mac_whitelist.txt
+Environment=SERVER_PORT=18743
+Environment=SERVE_DIRECTORY=/home/sabuser/minilinux_buildroot
+Environment=DATABASE_PATH=/home/sabuser/minilinux_buildroot/devices.db
+Environment=WHITELIST_FILE=/home/sabuser/minilinux_buildroot/mac_whitelist.txt
 
 # Logging
 StandardOutput=journal
@@ -26,7 +26,7 @@ SyslogIdentifier=minilinux-server
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/pi/minilinux-server-go
+ReadWritePaths=/home/sabuser/minilinux_buildroot
 
 [Install]
 WantedBy=multi-user.target

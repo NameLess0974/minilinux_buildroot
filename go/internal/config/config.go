@@ -38,8 +38,8 @@ type Config struct {
 
 // Default configuration values
 const (
-	DefaultPort           = 8080
-	DefaultServeDirectory = "/home/pi/minilinux-server-go"
+	DefaultPort           = 18743
+	DefaultServeDirectory = "/home/sabuser/minilinux_buildroot"
 	DefaultChunkSize      = 64 * 1024 // 64KB
 
 	DefaultReadTimeout       = 10 * time.Second
