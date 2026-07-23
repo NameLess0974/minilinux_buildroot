@@ -57,7 +57,7 @@ ip addr show | grep -A 3 "eth0\|end0"
 echo ""
 
 echo "=============================================="
-echo "User: admin / Password: SAB93500system"
+echo "User: sab (mot de passe configure)  ou  root par cle: keys/minilinux-root"
 echo "=============================================="
 
 exit 0

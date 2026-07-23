@@ -29,3 +29,7 @@ httpboot/
 
 *.log
 .gitperso/*
+
+# Cle privee root SSH : ne JAMAIS versionner (seule la publique est embarquee
+# dans l'image via authorized_keys). La cle privee reste locale.
+keys/minilinux-root

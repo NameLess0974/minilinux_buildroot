@@ -4,36 +4,71 @@
 # Version streaming avec verification signature RSA
 
 # Configuration
-BASE_URL="http://bootloader.sabsystem.com:8080/images"
+# Serveur : deux canaux. HTTP (18743) ne sert QUE boot.img/boot.sig au firmware
+# EEPROM (qui ne fait pas de TLS). Tout ce que ce script fait passe en HTTPS
+# (18443) avec pinning du certificat (--cacert), cf. guide serveur.
+SERVER="bootloader.sabsystem.com"
+HTTPS_BASE="https://${SERVER}:18443"
+CACERT="/etc/minilinux/server.crt"          # cert public pinne (overlay)
+
+BASE_URL="${HTTPS_BASE}/images"
 IMAGE_URL="${BASE_URL}/final_image.img.xz"
 SIG_URL="${BASE_URL}/final_image.sig"
+HEALTH_URL="${HTTPS_BASE}/health"           # sonde de disponibilite avant le flux
 TARGET_DEVICE="/dev/mmcblk0"
 PUBLIC_KEY="/etc/keys/bootkey-public.pem"
 MAX_RETRIES=3
 RETRY_DELAY=30
 PROGRESS_FILE="/tmp/progress"
-# Fallback si le HEAD request echoue (en bytes, taille decompressée estimée)
-DEFAULT_IMAGE_BYTES=3200000000
-# Ratio de decompression xz typique pour les images OS Linux (4-8x selon l'image)
-XZ_DECOMP_RATIO=5
+INSTALL_LOG="/tmp/install.log"              # journal complet envoye avant reboot
+
+# --- Robustesse TLS/reseau ---
+# Au demarrage, le reseau n'est pas toujours stable (juste apres le gros boot.img
+# HTTP) : la 1ere poignee de main HTTPS peut echouer en "bad record MAC" (erreur
+# TRANSPORT, pas HTTP). --retry-all-errors est la cle : il fait reessayer curl sur
+# ces erreurs transport, la ou --retry seul ne couvre que les 5xx/transitoires HTTP.
+# Ces retries sont INTERNES a curl -> un echec transitoire ne gache pas une des 3
+# tentatives d'installation.
+#
+# CURL_RETRY_DL  : telechargements critiques (image, signature) -> patient (5 x 2s).
+# CURL_RETRY_TEL : telemetrie best-effort -> leger (2 x 1s) pour ne jamais bloquer
+#                  la progression si le serveur est lent/injoignable.
+CURL_RETRY_DL="--retry 5 --retry-delay 2 --retry-all-errors --retry-connrefused"
+CURL_RETRY_TEL="--retry 2 --retry-delay 1 --retry-all-errors"
+
+# Identite machine + session (calcules une fois, cf. get_mac_address plus bas).
+# BOOT_ID = MAC + uptime : stable pour toute la session, survit au sens "groupe".
+MAC=""
+BOOT_ID=""
+ATTEMPT=1
+# Codes de sortie du dernier pipeline de streaming (remplis par stream_and_flash,
+# envoyes en telemetrie sur echec pour identifier le maillon fautif).
+STREAM_CURL_EXIT=0
+STREAM_XZ_EXIT=0
+STREAM_DD_EXIT=0
 
 # === LOGGING ===
+# Chaque ligne va sur /dev/kmsg, stdout, ET dans $INSTALL_LOG (envoye au serveur
+# avant reboot via send_logs).
 log() {
     local msg="[RPI-INSTALLER] $*"
     echo "<6>${msg}" > /dev/kmsg 2>/dev/null
     echo "$msg"
+    echo "$msg" >> "$INSTALL_LOG" 2>/dev/null || true
 }
 
 log_error() {
     local msg="[RPI-INSTALLER] ERROR: $*"
     echo "<3>${msg}" > /dev/kmsg 2>/dev/null
     echo "$msg" >&2
+    echo "$msg" >> "$INSTALL_LOG" 2>/dev/null || true
 }
 
 log_warn() {
     local msg="[RPI-INSTALLER] WARN: $*"
     echo "<4>${msg}" > /dev/kmsg 2>/dev/null
     echo "$msg"
+    echo "$msg" >> "$INSTALL_LOG" 2>/dev/null || true
 }
 
 log_section() {
@@ -46,30 +81,6 @@ log_section() {
 # Lu par fb_gif (main.c) pour mettre a jour l'affichage framebuffer
 set_progress() {
     echo "$1" > "${PROGRESS_FILE}"
-}
-
-# Obtenir dynamiquement la taille decompressée de l'image
-# Fait un HEAD request pour lire Content-Length du .xz, multiplie par XZ_DECOMP_RATIO
-# Fallback sur DEFAULT_IMAGE_BYTES si le serveur ne repond pas
-get_estimated_size() {
-    local url="$1"
-    local compressed_bytes=0
-
-    log "Estimation taille image (HEAD request sur $url)..."
-
-    compressed_bytes=$(curl -sI --connect-timeout 10 --max-time 15 "$url" 2>/dev/null \
-        | grep -i '^content-length:' \
-        | awk '{print $2}' \
-        | tr -d '\r\n')
-
-    if [ -n "${compressed_bytes}" ] && [ "${compressed_bytes}" -gt 0 ] 2>/dev/null; then
-        local estimated=$(( compressed_bytes * XZ_DECOMP_RATIO ))
-        log "Taille .xz: ${compressed_bytes} bytes | Estimee decompressee: ${estimated} bytes (ratio x${XZ_DECOMP_RATIO})"
-        echo "${estimated}"
-    else
-        log "HEAD request sans Content-Length, fallback: ${DEFAULT_IMAGE_BYTES} bytes"
-        echo "${DEFAULT_IMAGE_BYTES}"
-    fi
 }
 
 # === FONCTIONS UTILITAIRES ===
@@ -112,6 +123,27 @@ check_network() {
     fi
 
     log_error "Pas de connectivite!"
+    return 1
+}
+
+# Attend que le serveur reponde en HTTPS (poignee de main TLS OK) avant de lancer
+# le flux. Evite le "bad record MAC" du 1er appel : on ne demarre les vrais
+# telechargements qu'une fois le canal TLS reellement etabli. Best-effort borne :
+# si /health ne repond jamais, on continue quand meme (les curl ont leur propre
+# retry) au bout de ~30s.
+wait_server_ready() {
+    local max_wait="${1:-30}" waited=0
+    log "Attente disponibilite serveur HTTPS (${HEALTH_URL})..."
+    while [ $waited -lt $max_wait ]; do
+        if curl --cacert "$CACERT" -sf --connect-timeout 3 --max-time 5 \
+                "$HEALTH_URL" >/dev/null 2>&1; then
+            log "Serveur HTTPS pret (apres ${waited}s)"
+            return 0
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    log_warn "Serveur HTTPS non confirme apres ${max_wait}s (on continue, curl retentera)"
     return 1
 }
 
@@ -204,14 +236,30 @@ stream_and_flash() {
     # Pipeline avec tee pour calculer le hash du fichier compresse
     # Utiliser named pipe pour garantir que sha256sum lit tout
     local fifo="/tmp/hash_fifo.$$"
-    mkfifo "$fifo"
+    rm -f "$fifo"                    # nettoyer un eventuel reliquat d'un run tue
+    if ! mkfifo "$fifo"; then
+        log_error "Impossible de creer le FIFO $fifo"
+        kill "${flash_monitor_pid}" 2>/dev/null
+        wait "${flash_monitor_pid}" 2>/dev/null
+        return 1
+    fi
 
     # Lancer sha256sum en background
     (sha256sum < "$fifo" | awk '{print $1}' > "$hash_file") &
     local sha_pid=$!
 
-    # Pipeline principal - IDENTIQUE A L'ORIGINAL (curl -> tee -> xz -> dd)
-    curl -f -L -S \
+    # Pipeline principal (curl HTTPS pinne -> tee -> xz -> dd).
+    # VOLONTAIREMENT SANS --retry : sur un flux pipe (pas -o fichier), curl ne peut
+    # pas reprendre ; un retry apres coupure en cours re-telechargerait tout depuis
+    # 0 -> flux .xz partiel + complet concatenes = CORROMPU. Toute coupure fait
+    # echouer proprement le pipeline -> la boucle MAX_RETRIES relance une install
+    # PROPRE depuis le debut. La stabilite initiale du reseau est deja assuree par
+    # wait_server_ready (/health) appele avant d'arriver ici.
+    # --no-progress-meter : supprime la barre de progression curl (des centaines de
+    # lignes) qui polluait les logs ET gonflait le blob envoye au serveur. On garde
+    # -S pour n'afficher que les vraies erreurs. La progression visuelle reste
+    # assuree par le monitor time-based -> /tmp/progress (splash).
+    curl --cacert "$CACERT" -f -L -S --no-progress-meter \
         --connect-timeout 30 \
         --max-time 1800 \
         "$url" 2>"$curl_err" | \
@@ -224,6 +272,10 @@ stream_and_flash() {
     local tee_exit=${pipe_status[1]}
     local xz_exit=${pipe_status[2]}
     local dd_exit=${pipe_status[3]}
+    # Exposer les codes pour la telemetrie (diagnostic du maillon fautif, cf. spec).
+    STREAM_CURL_EXIT=$curl_exit
+    STREAM_XZ_EXIT=$xz_exit
+    STREAM_DD_EXIT=$dd_exit
 
     # Pipeline terminee - arreter le monitor time-based
     kill "${flash_monitor_pid}" 2>/dev/null
@@ -320,11 +372,10 @@ download_signature() {
 
     log "Telechargement signature: $url"
 
-    if curl -f -L -S --connect-timeout 30 -o "$output" "$url" 2>/dev/null; then
+    # HTTPS avec pinning du cert (--cacert). Pas de fallback wget : il ne connait
+    # pas notre CA auto-signee et casserait le pinning.
+    if curl --cacert "$CACERT" $CURL_RETRY_DL -f -L -S --connect-timeout 30 -o "$output" "$url" 2>/dev/null; then
         log "Signature telechargee: $(ls -la $output)"
-        return 0
-    elif wget -q --timeout=30 -O "$output" "$url" 2>/dev/null; then
-        log "Signature telechargee (wget): $(ls -la $output)"
         return 0
     else
         log_error "Impossible de telecharger la signature"
@@ -345,34 +396,73 @@ get_mac_address() {
     echo "$mac"
 }
 
+# Echappe une chaine pour l'inserer dans une valeur JSON (guillemets, backslash).
+json_escape() {
+    # backslash d'abord, puis guillemets ; supprime retours a la ligne
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\r\n'
+}
+
+# Initialise MAC + BOOT_ID (une seule fois, en debut de main).
+init_identity() {
+    MAC=$(get_mac_address)
+    if [ -z "$MAC" ]; then
+        log_warn "MAC introuvable"
+        MAC="UNKNOWN"
+    fi
+    # uptime entier (secondes) : stable pour toute la session
+    local up
+    up=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+    BOOT_ID="${MAC}-${up:-0}"
+    log "Identite: mac=${MAC} boot_id=${BOOT_ID}"
+}
+
+# Telemetrie de progression. Best-effort : jamais bloquant, jamais fatal.
+# Usage : send_event <step> <status> <progress> <message> [details_json]
+send_event() {
+    local step="$1" status="$2" progress="$3" message="$4"
+    # NB : ne PAS ecrire "${5:-{}}" -> bash y laisse un '}' parasite (JSON casse).
+    local details="$5"
+    [ -z "$details" ] && details="{}"
+    local msg_esc
+    msg_esc=$(json_escape "$message")
+    curl --cacert "$CACERT" $CURL_RETRY_TEL --max-time 8 --silent --output /dev/null \
+        -X POST "${HTTPS_BASE}/api/v1/events" \
+        -H "Content-Type: application/json" \
+        -d "{\"mac\":\"${MAC}\",\"boot_id\":\"${BOOT_ID}\",\"ts\":$(date +%s),\"step\":\"${step}\",\"status\":\"${status}\",\"progress\":${progress},\"attempt\":${ATTEMPT},\"message\":\"${msg_esc}\",\"details\":${details}}" \
+        2>/dev/null || true
+}
+
+# Envoi du blob de logs complet (avant reboot). Best-effort.
+send_logs() {
+    local logfile="${1:-$INSTALL_LOG}"
+    [ -f "$logfile" ] || return 0
+    curl --cacert "$CACERT" $CURL_RETRY_TEL --max-time 20 --silent --output /dev/null \
+        -X POST "${HTTPS_BASE}/api/v1/logs" \
+        -H "Content-Type: text/plain" \
+        -H "X-Machine-MAC: ${MAC}" \
+        -H "X-Boot-Id: ${BOOT_ID}" \
+        --data-binary @"$logfile" \
+        2>/dev/null || true
+}
+
+# Confirmation finale (machine a etats serveur). Desormais en HTTPS.
 send_confirmation() {
     local status="$1"      # success ou error
     local error_code="$2"  # optionnel: signature_invalid, download_failed, etc.
-    local server_base="http://bootloader.sabsystem.com:8080"
-    
-    local mac
-    mac=$(get_mac_address)
-    
-    if [ -z "$mac" ]; then
-        log_warn "Impossible de determiner la MAC address"
-        mac="UNKNOWN"
-    fi
-    
-    local url="${server_base}/confirm/${mac}?status=${status}"
+
+    local mac="${MAC:-$(get_mac_address)}"
+    [ -z "$mac" ] && mac="UNKNOWN"
+
+    local url="${HTTPS_BASE}/confirm/${mac}?status=${status}"
     if [ -n "$error_code" ]; then
         url="${url}&code=${error_code}"
     fi
-    
+
     log "Envoi confirmation au serveur: status=${status} code=${error_code:-none}"
-    log "URL: $url"
-    
-    # Essayer curl puis wget
+
     local response
-    if response=$(curl -f -s --connect-timeout 10 --max-time 30 "$url" 2>/dev/null); then
+    if response=$(curl --cacert "$CACERT" $CURL_RETRY_DL -f -s --connect-timeout 10 --max-time 30 "$url" 2>/dev/null); then
         log "Confirmation envoyee: $response"
-        return 0
-    elif response=$(wget -q -O - --timeout=30 "$url" 2>/dev/null); then
-        log "Confirmation envoyee (wget): $response"
         return 0
     else
         log_warn "Echec envoi confirmation (non bloquant)"
@@ -397,13 +487,24 @@ do_reboot() {
 
 # === MAIN ===
 
+# Reboot avec envoi du blob de logs juste avant (post-mortem sans ecran).
+reboot_with_logs() {
+    local delay="${1:-3}"
+    send_logs "$INSTALL_LOG"
+    do_reboot "$delay"
+}
+
 main() {
     local retry_count=0
     local sig_file="/tmp/final_image.sig"
     local hash_file="/tmp/image_hash.txt"
 
+    : > "$INSTALL_LOG" 2>/dev/null || true   # repartir d'un journal vierge
+
     log_section "AUTO-INSTALLER RPI OS - DEMARRAGE"
     set_progress 0
+    init_identity                            # remplit MAC + BOOT_ID
+    send_event boot_start start 0 "Demarrage installer"
     log "PID: $$ | PPID: $PPID"
     log "Date: $(date)"
     log "Target: ${TARGET_DEVICE}"
@@ -413,30 +514,43 @@ main() {
     log "Kernel: $(uname -r)"
 
     # Attendre le device
+    send_event wait_device start 0 "Attente carte SD" '{"timeout_s":30}'
     if ! wait_for_device "${TARGET_DEVICE}" 30; then
         log_error "Device non disponible - reboot"
-        do_reboot 60
+        send_event wait_device error 0 "Device ${TARGET_DEVICE} introuvable" '{"error_code":"no_sdcard"}'
+        reboot_with_logs 60
     fi
     set_progress 5
+    send_event device_ready ok 5 "Carte SD detectee"
 
     while [ $retry_count -lt $MAX_RETRIES ]; do
         retry_count=$((retry_count + 1))
+        ATTEMPT=$retry_count                 # utilise par send_event
         log_section "TENTATIVE ${retry_count}/${MAX_RETRIES}"
 
         if ! check_network; then
             log_error "Pas de reseau - retry dans ${RETRY_DELAY}s"
+            send_event network_check error 5 "Pas de connectivite" '{"error_code":"no_network"}'
             sleep $RETRY_DELAY
             continue
         fi
         set_progress 10
 
+        # Attendre que le canal HTTPS soit reellement etabli avant le 1er appel
+        # (evite le "bad record MAC" du reseau pas encore stable au demarrage).
+        wait_server_ready 30
+
+        send_event network_check ok 10 "Reseau OK"
+
         # Telecharger la signature d'abord
         if ! download_signature "${SIG_URL}" "${sig_file}"; then
             log_error "Echec telechargement signature - retry dans ${RETRY_DELAY}s"
+            send_event download_signature error 10 "Echec telechargement signature" '{"error_code":"signature_download"}'
             sleep $RETRY_DELAY
             continue
         fi
         set_progress 20
+        send_event download_signature ok 20 "Signature telechargee"
 
         safe_release_device "${TARGET_DEVICE}"
 
@@ -444,6 +558,7 @@ main() {
         start_time=$(date +%s)
 
         set_progress 25
+        send_event stream_flash start 25 "Streaming + flash en cours"
         # Streaming + flash avec calcul hash
         if stream_and_flash "${IMAGE_URL}" "${TARGET_DEVICE}"; then
             local end_time duration
@@ -456,13 +571,18 @@ main() {
 
             set_progress 90
             log "Duree flash: ${duration} secondes"
+            send_event flash_done ok 90 "Flash termine (${duration}s)"
 
             # Verifier la signature RSA
+            send_event verify_signature start 92 "Verification signature RSA"
             if verify_signature "${sig_file}" "${hash_file}" "${PUBLIC_KEY}"; then
                 log_section "SIGNATURE VALIDE - INSTALLATION REUSSIE"
                 set_progress 92
 
-                # Confirmer au serveur que tout est OK
+                # Telemetrie succes + confirmation machine a etats (les deux, cf. guide)
+                local img_hash
+                img_hash=$(cat "$hash_file" 2>/dev/null)
+                send_event install_success ok 95 "Signature valide" "{\"valid\":true,\"hash\":\"sha256:$(json_escape "$img_hash")\"}"
                 send_confirmation "success"
                 set_progress 95
 
@@ -470,13 +590,14 @@ main() {
                 rm -f "${sig_file}" "${hash_file}"
 
                 set_progress 100
-                do_reboot 5
+                send_event reboot ok 100 "Reboot"
+                reboot_with_logs 5
             else
                 log_section "SIGNATURE INVALIDE - WIPE ET RETRY"
-                
-                # Signaler l'erreur au serveur
+
+                send_event verify_signature error 92 "Signature RSA invalide" '{"error_code":"signature_invalid","valid":false}'
                 send_confirmation "error" "signature_invalid"
-                
+
                 wipe_device "${TARGET_DEVICE}"
                 rm -f "${sig_file}" "${hash_file}"
                 sleep $RETRY_DELAY
@@ -484,17 +605,19 @@ main() {
             fi
         else
             log_error "Flash echoue - retry dans ${RETRY_DELAY}s"
-            
-            # Signaler l'erreur au serveur
+
+            send_event stream_flash error 25 "Flash echoue" \
+                "{\"error_code\":\"stream_failed\",\"curl_exit\":${STREAM_CURL_EXIT},\"xz_exit\":${STREAM_XZ_EXIT},\"dd_exit\":${STREAM_DD_EXIT}}"
             send_confirmation "error" "download_failed"
-            
+
             sleep $RETRY_DELAY
             continue
         fi
     done
 
     log_section "ECHEC APRES ${MAX_RETRIES} TENTATIVES"
-    do_reboot 60
+    send_event reboot error 0 "Abandon apres ${MAX_RETRIES} tentatives" '{"error_code":"max_retries"}'
+    reboot_with_logs 60
 }
 
 main "$@"

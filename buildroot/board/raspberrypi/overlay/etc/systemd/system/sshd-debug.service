@@ -11,5 +11,6 @@ StandardOutput=journal+console
 StandardError=journal+console
 RemainAfterExit=yes
 
-[Install]
-WantedBy=multi-user.target
+# [Install] retire volontairement : le sshd natif fonctionne (fix des permissions
+# dans post-build.sh), ce contournement n'est plus auto-active. Le fichier reste
+# disponible pour un 'systemctl enable sshd-debug' manuel en cas de besoin.

@@ -6,7 +6,7 @@ Before=auto-installer.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/fb_gif /usr/share/splash/loading.gif
+ExecStart=/usr/local/bin/fb_video /usr/share/splash/loading.hevc
 StandardOutput=null
 StandardError=null
 Restart=always
