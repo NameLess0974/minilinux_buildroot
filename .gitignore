@@ -5,14 +5,22 @@ go/build/
 *.so
 *.dylib
 
+# Secrets : clés privées, jamais versionnées. Le .crt public peut l'être.
+private/certs/server.key
+private/keys/bootkey-private.pem
+*.key
+
+# Secrets d'environnement (mot de passe admin en clair). Seul .example est versionné.
+minilinux.env
+
 # Base de données SQLite (générée automatiquement)
-devices.db
-devices.db-shm
-devices.db-wal
+db/*.db
+db/*.db-shm
+db/*.db-wal
 *.db-journal
 
 # Images volumineuses (non versionnées)
-boot.img
+data/boot/boot.img
 *.img
 *.img.xz
 

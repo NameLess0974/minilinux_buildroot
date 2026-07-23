@@ -83,6 +83,36 @@ func initSchema(db *sql.DB) error {
 	-- Index for log queries
 	CREATE INDEX IF NOT EXISTS idx_log_mac ON event_log(mac);
 	CREATE INDEX IF NOT EXISTS idx_log_ts ON event_log(timestamp);
+
+	-- Telemetry events (per-step progress/error reported by the auto-installer)
+	CREATE TABLE IF NOT EXISTS telemetry_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		boot_id TEXT NOT NULL,
+		mac TEXT NOT NULL,
+		ip TEXT,
+		client_ts INTEGER,
+		received_at INTEGER NOT NULL,
+		step TEXT,
+		status TEXT,
+		progress INTEGER DEFAULT 0,
+		attempt INTEGER DEFAULT 1,
+		message TEXT,
+		error_code TEXT,
+		details TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_tel_boot ON telemetry_events(boot_id, received_at);
+	CREATE INDEX IF NOT EXISTS idx_tel_mac ON telemetry_events(mac);
+	CREATE INDEX IF NOT EXISTS idx_tel_received ON telemetry_events(received_at);
+
+	-- Telemetry logs (full text blob, one row per boot_id, upserted)
+	CREATE TABLE IF NOT EXISTS telemetry_logs (
+		boot_id TEXT PRIMARY KEY,
+		mac TEXT NOT NULL,
+		ip TEXT,
+		received_at INTEGER NOT NULL,
+		body TEXT NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_tellog_mac ON telemetry_logs(mac);
 	`
 
 	_, err := db.Exec(schema)

@@ -2,10 +2,14 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	_ "embed"
 	"fmt"
+	stdlog "log"
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 
 	"minilinux-server/internal/arp"
 	"minilinux-server/internal/config"
@@ -15,15 +19,40 @@ import (
 	"minilinux-server/internal/whitelist"
 )
 
-// Server represents the HTTP boot server
+// tlsNoiseFilter drops the http.Server's benign, non-actionable connection-level
+// noise (self-signed cert rejected by a browser, corrupted/aborted TLS handshakes
+// from clients on a flaky link) and forwards anything else to slog at Warn.
+// These come from net/http's internal logger, not our request middleware.
+type tlsNoiseFilter struct{ logger *slog.Logger }
+
+func (f tlsNoiseFilter) Write(p []byte) (int, error) {
+	msg := string(p)
+	noisy := strings.Contains(msg, "TLS handshake error") ||
+		strings.Contains(msg, "bad record MAC") ||
+		strings.Contains(msg, "unknown certificate") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "EOF")
+	if !noisy {
+		f.logger.Warn("http server", "msg", strings.TrimSpace(msg))
+	}
+	return len(p), nil
+}
+
+//go:embed dashboard.html
+var dashboardHTML []byte
+
+// Server represents the boot server. It runs two listeners:
+//   - httpServer:  plain HTTP, boot.img / boot.sig only (firmware EEPROM can't do TLS)
+//   - httpsServer: TLS, everything else (confirm, health, images, api, dashboard)
 type Server struct {
-	cfg        *config.Config
-	httpServer *http.Server
-	store      storage.Storage
-	whitelist  *whitelist.Whitelist
-	arpCache   *arp.Cache
-	handlers   *handlers.Handlers
-	logger     *slog.Logger
+	cfg         *config.Config
+	httpServer  *http.Server
+	httpsServer *http.Server
+	store       storage.Storage
+	whitelist   *whitelist.Whitelist
+	arpCache    *arp.Cache
+	handlers    *handlers.Handlers
+	logger      *slog.Logger
 }
 
 // New creates a new Server instance
@@ -39,10 +68,10 @@ func New(cfg *config.Config, store storage.Storage, wl *whitelist.Whitelist, arp
 	// Create handlers
 	s.handlers = handlers.New(cfg, store, wl, arpCache, logger)
 
-	// Create HTTP server
+	// HTTP listener: boot files only (served in clear, integrity guaranteed by RSA sig)
 	s.httpServer = &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.Port),
-		Handler:           s.routes(),
+		Handler:           s.bootRoutes(),
 		ReadTimeout:       cfg.ReadTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
@@ -50,22 +79,69 @@ func New(cfg *config.Config, store storage.Storage, wl *whitelist.Whitelist, arp
 		MaxHeaderBytes:    1 << 20, // 1MB
 	}
 
+	// HTTPS listener: everything sensitive (only started if TLS is configured)
+	if cfg.EnableHTTPS {
+		s.httpsServer = &http.Server{
+			Addr:              fmt.Sprintf(":%d", cfg.HTTPSPort),
+			Handler:           s.secureRoutes(),
+			ReadTimeout:       cfg.ReadTimeout,
+			WriteTimeout:      cfg.WriteTimeout,
+			IdleTimeout:       cfg.IdleTimeout,
+			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+			MaxHeaderBytes:    1 << 20,
+			TLSConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			},
+			// Silence benign per-connection TLS noise (see tlsNoiseFilter).
+			ErrorLog: stdlog.New(tlsNoiseFilter{logger: logger}, "", 0),
+		}
+	}
+
 	return s
 }
 
-// routes sets up the HTTP routes
-func (s *Server) routes() http.Handler {
+// bootRoutes is the HTTP (clear) listener: ONLY boot.img / boot.sig, because the
+// Raspberry Pi firmware/EEPROM HTTP-boot client cannot speak TLS. Integrity of these
+// files is guaranteed independently by the RSA signature (boot.sig), so clear text
+// is acceptable here. Everything else returns 404 on this port.
+func (s *Server) bootRoutes() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/boot.img", s.handlers.HandleBoot)
+	mux.HandleFunc("/boot.sig", s.handlers.HandleBoot)
+
+	// Anything else over plain HTTP is refused (sensitive routes live on HTTPS only).
+	mux.HandleFunc("/", s.handleHTTPNotAllowed)
+
+	return s.withMiddleware(mux)
+}
+
+// secureRoutes is the HTTPS listener: everything sensitive. Reached by the
+// already-booted auto-installer (full Linux, curl+TLS) and by the dashboard browser.
+func (s *Server) secureRoutes() http.Handler {
 	mux := http.NewServeMux()
 
 	// Confirmation endpoint
 	mux.HandleFunc(s.cfg.ConfirmEndpoint, s.handlers.HandleConfirm)
 
-	// Boot files
-	mux.HandleFunc("/boot.img", s.handlers.HandleBoot)
-	mux.HandleFunc("/boot.sig", s.handlers.HandleBoot)
-
 	// Image files
 	mux.HandleFunc("/images/", s.handlers.HandleImage)
+
+	// Telemetry ingestion (from auto-installer, best-effort)
+	mux.HandleFunc("/api/v1/events", s.handlers.HandleEvent)
+	mux.HandleFunc("/api/v1/logs", s.handlers.HandleLogs)     // POST blob (no trailing seg)
+	mux.HandleFunc("/api/v1/logs/", s.handlers.HandleAPILogs) // GET /api/v1/logs/{boot_id}
+
+	// Telemetry read API (for dashboard)
+	mux.HandleFunc("/api/v1/sessions", s.handlers.HandleAPISessions)
+	mux.HandleFunc("/api/v1/sessions/", s.handlers.HandleAPISessionDetail)
+
+	// Fleet API: per-box state + reboot timing, and manual actions
+	mux.HandleFunc("/api/v1/fleet", s.handlers.HandleAPIFleet)
+	mux.HandleFunc("/api/v1/action", s.handlers.HandleAPIAction)
+
+	// Dashboard (live monitoring page)
+	mux.HandleFunc("/dashboard", s.handleDashboard)
 
 	// Health check
 	mux.HandleFunc("/health", s.handleHealth)
@@ -73,11 +149,31 @@ func (s *Server) routes() http.Handler {
 	// Catch-all for unknown paths
 	mux.HandleFunc("/", s.handleNotFound)
 
-	// Apply middleware
+	return s.withMiddleware(mux)
+}
+
+// withMiddleware wraps a mux with recovery + logging.
+func (s *Server) withMiddleware(mux http.Handler) http.Handler {
 	handler := middleware.Recovery(s.logger)(mux)
 	handler = middleware.Logging(s.logger)(handler)
-
 	return handler
+}
+
+// handleHTTPNotAllowed refuses non-boot paths on the plain HTTP port, opaquely.
+func (s *Server) handleHTTPNotAllowed(w http.ResponseWriter, r *http.Request) {
+	s.logger.Warn("plain-HTTP request to non-boot path (refused)",
+		"path", r.URL.Path, "method", r.Method)
+	http.Error(w, "Not found", http.StatusNotFound)
+}
+
+// handleDashboard serves the live monitoring page (admin-guarded, HTTP Basic Auth).
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	if !s.handlers.RequireAdmin(w, r) {
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(dashboardHTML)
 }
 
 // handleHealth returns server health status
@@ -87,43 +183,53 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-// handleNotFound handles requests for unknown paths
+// handleNotFound returns an opaque 404 for any unknown path, including "/".
+// No banner, no file listing, no protocol hints — anyone authorised already
+// knows the exact paths to use.
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" {
-		// Root path - return allowed files info
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "HTTP Boot Server")
-		fmt.Fprintln(w, "Allowed files:")
-		
-		files := make([]string, 0, len(s.cfg.AllowedFiles))
-		for f := range s.cfg.AllowedFiles {
-			files = append(files, f)
-		}
-		sort.Strings(files)
-		for _, f := range files {
-			fmt.Fprintf(w, "  - %s\n", f)
-		}
-		return
-	}
-
-	s.logger.Info("404 not found",
-		"path", r.URL.Path,
-		"method", r.Method)
+	s.logger.Info("404 not found", "path", r.URL.Path, "method", r.Method)
 	http.Error(w, "Not found", http.StatusNotFound)
 }
 
-// Start starts the HTTP server
+// Start starts both listeners. It blocks on the HTTP (boot) listener; the HTTPS
+// listener runs in a goroutine. Returns when either listener stops with an error.
 func (s *Server) Start() error {
 	// Print initial state
 	s.printInitialState()
 
+	// Start HTTPS listener in the background (if configured).
+	if s.httpsServer != nil {
+		go func() {
+			s.logger.Info("HTTPS listener starting",
+				"port", s.cfg.HTTPSPort,
+				"cert", s.cfg.TLSCertFile)
+			// Cert/key files are passed here; empty args use TLSConfig-provided certs.
+			err := s.httpsServer.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+			if err != nil && err != http.ErrServerClosed {
+				s.logger.Error("HTTPS listener error", "error", err)
+			}
+		}()
+	} else {
+		s.logger.Warn("HTTPS disabled: no TLS cert/key found — run ./gen-server-cert.sh and place certs in certs/",
+			"expected_cert", s.cfg.TLSCertFile)
+	}
+
+	// Block on the plain HTTP (boot) listener.
+	s.logger.Info("HTTP (boot) listener starting", "port", s.cfg.Port)
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the server
+// Shutdown gracefully shuts down both listeners.
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
+	var httpsErr error
+	if s.httpsServer != nil {
+		httpsErr = s.httpsServer.Shutdown(ctx)
+	}
+	httpErr := s.httpServer.Shutdown(ctx)
+	if httpErr != nil {
+		return httpErr
+	}
+	return httpsErr
 }
 
 // printInitialState prints the whitelist and device states on startup

@@ -11,11 +11,15 @@ ExecStart=/usr/local/bin/minilinux-server-go
 Restart=always
 RestartSec=5
 
-# Environment variables (optional overrides)
+# PROJECT_ROOT ancre tous les chemins par defaut :
+#   data/ (servi), db/devices.db, config/mac_whitelist.txt, private/certs/server.{crt,key}
+Environment=PROJECT_ROOT=/home/sabuser/minilinux_buildroot
 Environment=SERVER_PORT=18743
-Environment=SERVE_DIRECTORY=/home/sabuser/minilinux_buildroot
-Environment=DATABASE_PATH=/home/sabuser/minilinux_buildroot/devices.db
-Environment=WHITELIST_FILE=/home/sabuser/minilinux_buildroot/mac_whitelist.txt
+Environment=HTTPS_PORT=18443
+
+# Secrets (ADMIN_USER, ADMIN_PASS) charges depuis un fichier non versionne (600).
+# Voir deploy/minilinux.env.example. Le "-" rend le fichier optionnel au demarrage.
+EnvironmentFile=-/etc/minilinux.env
 
 # Logging
 StandardOutput=journal

@@ -9,9 +9,15 @@ import (
 // Config holds all server configuration
 type Config struct {
 	// Server settings
-	Port           int
+	Port           int // HTTP port (boot.img / boot.sig only — firmware EEPROM can't do TLS)
+	HTTPSPort      int // HTTPS port (everything else: confirm, health, images, api, dashboard)
 	ServeDirectory string
 	ChunkSize      int
+
+	// TLS (self-signed cert, pinned by clients via curl --cacert)
+	TLSCertFile string
+	TLSKeyFile  string
+	EnableHTTPS bool
 
 	// Timeouts
 	ReadTimeout       time.Duration
@@ -24,7 +30,6 @@ type Config struct {
 	FailureThreshold int
 
 	// Files
-	AllowedFiles  map[string]bool
 	WhitelistFile string
 	DatabasePath  string
 
@@ -32,15 +37,25 @@ type Config struct {
 	WhitelistReloadInterval time.Duration
 	ARPCacheTTL             time.Duration
 
+	// Telemetry retention: events/logs older than this are purged periodically.
+	TelemetryRetention   time.Duration
+	TelemetryPurgeEvery  time.Duration
+
 	// Endpoints
 	ConfirmEndpoint string
+
+	// Admin auth (HTTP Basic): protects the dashboard and destructive actions.
+	// If AdminUser is empty, auth is disabled (open access).
+	AdminUser string
+	AdminPass string
 }
 
 // Default configuration values
 const (
-	DefaultPort           = 18743
-	DefaultServeDirectory = "/home/sabuser/minilinux_buildroot"
-	DefaultChunkSize      = 64 * 1024 // 64KB
+	DefaultPort        = 18743
+	DefaultHTTPSPort   = 18443
+	DefaultProjectRoot = "/home/sabuser/minilinux_buildroot"
+	DefaultChunkSize   = 64 * 1024 // 64KB
 
 	DefaultReadTimeout       = 10 * time.Second
 	DefaultWriteTimeout      = 30 * time.Minute // Very long for large files (6.7GB)
@@ -53,14 +68,22 @@ const (
 	DefaultWhitelistReloadInterval = 60 * time.Second
 	DefaultARPCacheTTL             = 30 * time.Second
 
+	DefaultTelemetryRetention  = 14 * 24 * time.Hour // keep 14 days of telemetry
+	DefaultTelemetryPurgeEvery = 6 * time.Hour
+
 	DefaultConfirmEndpoint = "/confirm/"
 )
 
 // Load creates a new Config with values from environment or defaults
 func Load(configPath string) *Config {
+	// Project root anchors all default paths. Individual paths can still be
+	// overridden independently via their own env vars below.
+	root := getEnvString("PROJECT_ROOT", DefaultProjectRoot)
+
 	cfg := &Config{
 		Port:           getEnvInt("SERVER_PORT", DefaultPort),
-		ServeDirectory: getEnvString("SERVE_DIRECTORY", DefaultServeDirectory),
+		HTTPSPort:      getEnvInt("HTTPS_PORT", DefaultHTTPSPort),
+		ServeDirectory: getEnvString("SERVE_DIRECTORY", root+"/data"),
 		ChunkSize:      getEnvInt("CHUNK_SIZE", DefaultChunkSize),
 
 		ReadTimeout:       getEnvDuration("READ_TIMEOUT", DefaultReadTimeout),
@@ -74,42 +97,39 @@ func Load(configPath string) *Config {
 		WhitelistReloadInterval: getEnvDuration("WHITELIST_RELOAD_INTERVAL", DefaultWhitelistReloadInterval),
 		ARPCacheTTL:             getEnvDuration("ARP_CACHE_TTL", DefaultARPCacheTTL),
 
+		TelemetryRetention:  getEnvDuration("TELEMETRY_RETENTION", DefaultTelemetryRetention),
+		TelemetryPurgeEvery: getEnvDuration("TELEMETRY_PURGE_EVERY", DefaultTelemetryPurgeEvery),
+
 		ConfirmEndpoint: DefaultConfirmEndpoint,
 
-		AllowedFiles: map[string]bool{
-			"boot.img":              true,
-			"boot.sig":              true,
-			"images/final_image.img.xz": true,
-			"images/final_image.sig":    true,
-		},
+		AdminUser: getEnvString("ADMIN_USER", ""),
+		AdminPass: getEnvString("ADMIN_PASS", ""),
 	}
 
-	// Set file paths relative to serve directory
-	cfg.WhitelistFile = cfg.ServeDirectory + "/mac_whitelist.txt"
-	cfg.DatabasePath = cfg.ServeDirectory + "/devices.db"
+	// Paths default under the project root but each can be overridden on its own.
+	// They live OUTSIDE ServeDirectory (data/) so secrets and the DB are never
+	// reachable through the file-serving handlers.
+	cfg.WhitelistFile = getEnvString("WHITELIST_FILE", root+"/config/mac_whitelist.txt")
+	cfg.DatabasePath = getEnvString("DATABASE_PATH", root+"/db/devices.db")
 
-	// Override with env if set
-	if v := os.Getenv("WHITELIST_FILE"); v != "" {
-		cfg.WhitelistFile = v
-	}
-	if v := os.Getenv("DATABASE_PATH"); v != "" {
-		cfg.DatabasePath = v
+	cfg.TLSCertFile = getEnvString("TLS_CERT_FILE", root+"/private/certs/server.crt")
+	cfg.TLSKeyFile = getEnvString("TLS_KEY_FILE", root+"/private/certs/server.key")
+	if fileExists(cfg.TLSCertFile) && fileExists(cfg.TLSKeyFile) {
+		cfg.EnableHTTPS = true
 	}
 
 	return cfg
 }
 
-// IsBootFile returns true if the file is a boot file (subject to state machine)
-func (c *Config) IsBootFile(filename string) bool {
-	return filename == "boot.img" || filename == "boot.sig"
-}
-
-// IsAllowedFile returns true if the file is in the allowed list
-func (c *Config) IsAllowedFile(filename string) bool {
-	return c.AllowedFiles[filename]
-}
-
 // Helper functions for environment variables
+
+func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
 
 func getEnvString(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {

@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parc minilinux — suivi temps réel</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --border:#262b36; --fg:#e6e9ef; --muted:#8b93a3;
+    --ok:#34d399; --err:#f87171; --run:#60a5fa; --warn:#fbbf24; --idle:#6b7280; --purple:#a78bfa;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0; font-weight:600; display:flex; align-items:center; gap:8px; }
+  .live { width:8px; height:8px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 0 rgba(52,211,153,.5); animation:pulse 2s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(52,211,153,.5)} 70%{box-shadow:0 0 0 6px rgba(52,211,153,0)} 100%{box-shadow:0 0 0 0 rgba(52,211,153,0)} }
+  .live.stale { background:var(--err); animation:none; }
+  .stats { display:flex; gap:8px; margin-left:auto; flex-wrap:wrap; }
+  .chip { display:flex; align-items:center; gap:6px; color:var(--muted); background:var(--panel); border:1px solid var(--border); padding:3px 10px; border-radius:999px; cursor:pointer; font-size:13px; user-select:none; }
+  .chip.active { border-color:var(--run); color:var(--fg); }
+  .chip b { color:var(--fg); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; }
+  #search { background:var(--panel); border:1px solid var(--border); color:var(--fg); padding:6px 12px; border-radius:6px; font-size:13px; width:220px; }
+  #search:focus { outline:none; border-color:var(--run); }
+  main { padding:14px 20px; }
+  .updated { color:var(--muted); font-size:11px; margin-bottom:8px; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+  th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+  th.sortable:hover { color:var(--fg); }
+  th .arrow { opacity:.4; font-size:9px; }
+  th.sorted .arrow { opacity:1; color:var(--run); }
+  tr.row:hover { background:var(--panel); }
+  tr.row.err td { background:rgba(248,113,113,.06); }
+  .mac { font-family:ui-monospace,monospace; font-size:13px; cursor:pointer; }
+  .mac:hover { color:var(--run); }
+  .ip { color:var(--muted); font-family:ui-monospace,monospace; font-size:12px; }
+  .tag { font-size:10px; padding:1px 5px; border-radius:4px; margin-left:6px; vertical-align:middle; }
+  .tag-wl { background:rgba(107,114,128,.2); color:var(--muted); }
+  .tag-nowl { background:rgba(248,113,113,.18); color:var(--err); }
+  .logsbtn { background:rgba(96,165,250,.12); color:var(--run); border:1px solid rgba(96,165,250,.4);
+    padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; transition:all .12s; }
+  .logsbtn:hover { background:rgba(96,165,250,.25); color:var(--fg); }
+  .state { font-size:12px; font-weight:500; padding:2px 8px; border-radius:999px; white-space:nowrap; }
+  .st-allowed { background:rgba(96,165,250,.15); color:var(--run); }
+  .st-blocked_monitoring { background:rgba(251,191,36,.15); color:var(--warn); }
+  .st-blocked_permanent { background:rgba(52,211,153,.15); color:var(--ok); }
+  .st-unknown { background:rgba(107,114,128,.15); color:var(--idle); }
+  .reboot { font-family:ui-monospace,monospace; }
+  .reboot .warnc { color:var(--err); font-weight:700; }
+  .bar { position:relative; height:7px; background:var(--border); border-radius:4px; width:110px; overflow:hidden; display:inline-block; vertical-align:middle; }
+  .bar>span { position:absolute; left:0; top:0; bottom:0; border-radius:4px; transition:width .3s; }
+  .muted { color:var(--muted); }
+  .badge { display:inline-block; padding:2px 7px; border-radius:999px; font-size:11px; font-weight:500; }
+  .b-ok{background:rgba(52,211,153,.15);color:var(--ok);} .b-error{background:rgba(248,113,113,.15);color:var(--err);}
+  .b-retry{background:rgba(251,191,36,.15);color:var(--warn);} .b-run{background:rgba(96,165,250,.15);color:var(--run);}
+  .b-idle{background:rgba(107,114,128,.15);color:var(--idle);}
+  .attempt { display:inline-flex; align-items:center; gap:3px; margin-left:6px; padding:1px 6px;
+    border-radius:4px; font-size:10px; font-weight:600; letter-spacing:.02em; vertical-align:middle;
+    color:var(--warn); background:rgba(251,191,36,.12); border:1px solid rgba(251,191,36,.3); }
+  .attempt.last { color:var(--err); background:rgba(248,113,113,.12); border-color:rgba(248,113,113,.35); }
+  .attempt b { font-family:ui-monospace,monospace; font-weight:700; }
+  .flashimg { color:var(--purple); font-size:11px; font-weight:600; }
+  .actions { white-space:nowrap; }
+  .actions button { background:transparent; color:var(--muted); border:1px solid var(--border); padding:4px 10px; border-radius:6px; cursor:pointer; font-size:12px; margin-right:5px; transition:all .12s; }
+  .actions button:hover { color:var(--fg); }
+  .actions .reflash:hover { border-color:var(--purple); color:var(--purple); background:rgba(167,139,250,.1); }
+  .actions .block:hover { border-color:var(--warn); color:var(--warn); background:rgba(251,191,36,.1); }
+  .actions .reset:hover { border-color:var(--err); color:var(--err); background:rgba(248,113,113,.1); }
+  .ec { color:var(--err); font-family:ui-monospace,monospace; font-size:11px; }
+  .empty { color:var(--muted); padding:40px; text-align:center; }
+  #detail { margin-top:18px; display:none; } #detail.show { display:block; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:14px 16px; }
+  .spark { display:inline-flex; align-items:flex-end; gap:2px; height:20px; margin-left:8px; vertical-align:middle; }
+  .spark i { width:4px; background:var(--run); border-radius:1px; display:inline-block; }
+  .tl { list-style:none; margin:10px 0 0; padding:0; }
+  .tl li { display:grid; grid-template-columns:74px 160px 1fr auto; gap:10px; padding:5px 0; border-bottom:1px solid var(--border); align-items:center; }
+  .tl time { color:var(--muted); font-size:12px; font-family:ui-monospace,monospace; }
+  .dl { font-size:12px; color:var(--muted); font-family:ui-monospace,monospace; }
+  .panel button.close,.panel button.logs { background:var(--border); color:var(--fg); border:none; padding:6px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  pre { background:#0b0d11; border:1px solid var(--border); border-radius:6px; padding:12px; margin:12px 0 0;
+    max-height:60vh; overflow-y:auto; overflow-x:hidden; white-space:pre-wrap; word-break:break-word;
+    font-size:12px; line-height:1.5; font-family:ui-monospace,monospace; }
+  pre::-webkit-scrollbar { width:10px; }
+  pre::-webkit-scrollbar-thumb { background:var(--border); border-radius:5px; }
+  pre::-webkit-scrollbar-track { background:transparent; }
+  .toast { position:fixed; bottom:20px; right:20px; background:var(--panel); border:1px solid var(--border); padding:10px 16px; border-radius:8px; opacity:0; transition:opacity .3s; pointer-events:none; }
+  .toast.show { opacity:1; }
+  /* Tooltip maison (data-tip) : plus lisible que title natif */
+  [data-tip] { position:relative; }
+  [data-tip]:hover::after { content:attr(data-tip); position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%);
+    background:#0b0d11; color:var(--fg); border:1px solid var(--border); padding:7px 10px; border-radius:6px;
+    font-size:12px; font-weight:400; line-height:1.4; white-space:normal; width:max-content; max-width:240px; z-index:20;
+    box-shadow:0 4px 14px rgba(0,0,0,.4); pointer-events:none; }
+  [data-tip]:hover::before { content:""; position:absolute; bottom:calc(100% + 1px); left:50%; transform:translateX(-50%);
+    border:5px solid transparent; border-top-color:var(--border); z-index:20; pointer-events:none; }
+  /* Ancrage à droite pour les colonnes de fin (évite le débordement hors écran) */
+  .actions [data-tip]:hover::after { left:auto; right:0; transform:none; }
+  .actions [data-tip]:hover::before { left:auto; right:14px; transform:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="live" id="live"></span> Parc minilinux</h1>
+  <input id="search" type="search" placeholder="Filtrer MAC / IP…" autocomplete="off">
+  <div class="stats" id="stats"></div>
+</header>
+<main>
+  <div class="updated" id="updated"></div>
+  <table>
+    <thead><tr id="head"></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="empty" class="empty">Aucune box connue pour l'instant.</div>
+
+  <section id="detail"><div class="panel">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <strong id="d-title" class="mac"></strong>
+      <span id="d-ip" class="ip"></span>
+      <button class="logs" id="d-logs" style="margin-left:auto">Voir les logs</button>
+      <button class="close" id="d-close">Fermer</button>
+    </div>
+    <ul class="tl" id="timeline"></ul>
+    <pre id="logbox" style="display:none"></pre>
+  </div></section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const POLL_MS = 3000;
+let currentBoot = null, serverNow = Math.floor(Date.now()/1000);
+let lastData = [], filterState = "", searchQ = "", sortKey = "last_seen", sortDir = -1;
+let lastFetchOK = 0;
+
+function api(path){ return path; }
+function authHeaders(extra){ return extra||{}; }
+
+const STEP = {boot_start:"Démarrage",wait_device:"Attente SD",device_ready:"SD détectée",network_check:"Réseau OK",
+ download_signature:"Signature OK",wipe_device:"Effacement",stream_flash:"Flash…",flash_done:"Flash terminé",
+ verify_signature:"Vérif sig",install_success:"Succès",reboot:"Reboot"};
+const ERR = {no_sdcard:"Pas de SD",no_network:"Pas de réseau",signature_download:"Échec DL signature",
+ signature_invalid:"Signature invalide",stream_failed:"Échec flash",flash_failed:"Échec flash",max_retries:"Abandon (3x)"};
+const STATE_LABEL = {allowed:"autorisé (flash)",blocked_monitoring:"surveillance SD",blocked_permanent:"stable (SD)",unknown:"télémétrie seule"};
+const STATE_TIP = {
+  allowed:"La box est autorisée à télécharger les fichiers de boot : elle sera (re)flashée au prochain démarrage réseau.",
+  blocked_monitoring:"Post-flash. Le serveur renvoie 404 pour forcer le boot sur SD, et surveille les reboots répétés (échec SD).",
+  blocked_permanent:"Boot SD confirmé stable. La box tourne normalement sur sa carte SD.",
+  unknown:"Box vue uniquement via la télémétrie d'installation, sans encore d'état de boot enregistré."
+};
+
+const COLS = [
+  {key:"mac",       label:"Box (MAC)"},
+  {key:"ip",        label:"IP"},
+  {key:"state",     label:"État"},
+  {key:"install",   label:"Installation"},
+  {key:"reboot",    label:"Reboots"},
+  {key:"since",     label:"Dernier reboot"},
+  {key:"gap",       label:"Écart moy."},
+  {key:"last_seen", label:"Vu"},
+  {key:null,        label:"Actions"},
+];
+
+function dur(s){ if(s==null)return"—"; if(s<60)return s+"s"; if(s<3600)return Math.floor(s/60)+"m"+(s%60)+"s"; return Math.floor(s/3600)+"h"+Math.floor((s%3600)/60)+"m"; }
+function ago(s){ const d=serverNow-s; if(d<5)return"à l'instant"; if(d<60)return d+"s"; if(d<3600)return Math.floor(d/60)+"min"; return Math.floor(d/3600)+"h"; }
+function absTime(sec){ return new Date(sec*1000).toLocaleString(); }
+function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function toast(m){ const t=document.getElementById("toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2200); }
+
+function installBadge(d){
+  if(!d.install_step) return `<span class="muted">—</span>`;
+  const st=d.install_status, cls = st==="error"?"b-error":st==="retry"?"b-retry":
+    (d.install_step==="install_success"||d.install_step==="reboot")?"b-ok":"b-run";
+  const lbl = STEP[d.install_step]||d.install_step;
+  const col = cls==="b-error"?"var(--err)":cls==="b-ok"?"var(--ok)":"var(--run)";
+  const att = (d.install_attempt>1)?`<span class="attempt ${d.install_attempt>=3?"last":""}" data-tip="Tentative d'installation en cours (max 3).">essai <b>${d.install_attempt}/3</b></span>`:"";
+  const ec = d.install_error?`<div class="ec">${esc(ERR[d.install_error]||d.install_error)}</div>`:"";
+  return `<span class="badge ${cls}">${esc(lbl)}</span>${att}
+    <div class="bar" style="margin-top:3px"><span style="width:${d.install_progress}%;background:${col}"></span></div>
+    <span class="muted" style="font-size:11px"> ${d.install_progress}%</span>${ec}`;
+}
+
+// Sort value per column key.
+function sortVal(d,k){
+  switch(k){
+    case "mac": return d.mac||"";
+    case "ip": return d.ip||"";
+    case "state": return d.state||"";
+    case "install": return d.install_progress||0;
+    case "reboot": return d.reboot_count||0;
+    case "since": return d.sec_since_reboot==null?Infinity:d.sec_since_reboot;
+    case "gap": return d.avg_reboot_gap==null?Infinity:d.avg_reboot_gap;
+    case "last_seen": return d.sec_since_update||0;
+    default: return 0;
+  }
+}
+
+function renderHead(){
+  document.getElementById("head").innerHTML = COLS.map(c=>{
+    if(!c.key) return `<th>${c.label}</th>`;
+    const on = sortKey===c.key;
+    const arr = on ? (sortDir>0?"▲":"▼") : "";
+    return `<th class="sortable ${on?"sorted":""}" data-k="${c.key}">${c.label} <span class="arrow">${arr}</span></th>`;
+  }).join("");
+  document.querySelectorAll("th.sortable").forEach(th=> th.onclick=()=>{
+    const k=th.dataset.k;
+    if(sortKey===k) sortDir=-sortDir; else { sortKey=k; sortDir=1; }
+    render();
+  });
+}
+
+async function refresh(){
+  let data;
+  try{ data=await (await fetch(api("/api/v1/fleet"))).json(); }
+  catch(e){ markLive(false); return; }
+  if(!data.ok){ markLive(false); return; }
+  serverNow=data.server_now; lastFetchOK=Date.now();
+  window._thr=data.threshold;
+  lastData=data.devices||[];
+  markLive(true);
+  render();
+  if(currentBoot) loadTimeline(currentBoot);
+}
+
+function markLive(ok){
+  const el=document.getElementById("live");
+  el.classList.toggle("stale", !ok);
+  document.getElementById("updated").textContent = ok
+    ? "Dernière mise à jour : "+new Date().toLocaleTimeString()
+    : "Connexion perdue — nouvelle tentative…";
+}
+
+function render(){
+  const thr=window._thr||3;
+  const q=searchQ.toLowerCase();
+  let devs=lastData.filter(d=>{
+    if(filterState==="error" && d.install_status!=="error") return false;
+    if(filterState && filterState!=="error" && d.state!==filterState) return false;
+    if(q && !((d.mac||"").toLowerCase().includes(q) || (d.ip||"").toLowerCase().includes(q))) return false;
+    return true;
+  });
+  devs.sort((a,b)=>{ const x=sortVal(a,sortKey),y=sortVal(b,sortKey);
+    if(x<y)return -sortDir; if(x>y)return sortDir; return 0; });
+
+  document.getElementById("empty").style.display=devs.length?"none":"block";
+
+  document.getElementById("rows").innerHTML = devs.map(d=>{
+    const rc=d.reboot_count, rcCls=(rc>=thr-1&&rc>0)?"warnc":"";
+    const isErr=d.install_status==="error";
+    const flashImg=d.flash_img?`<div class="flashimg">reflash forcé</div>`:"";
+    const wl=d.whitelisted
+      ? `<span class="tag tag-wl" data-tip="MAC présente dans la whitelist : autorisée à télécharger.">wl</span>`
+      : `<span class="tag tag-nowl" data-tip="MAC absente de la whitelist : le serveur refuse de la servir (boot et images).">non-wl</span>`;
+    const lastErr=(!isErr && d.last_error)?`<div class="ec" data-tip="Dernière erreur mémorisée (la box a peut-être repris depuis).">${esc(ERR[d.last_error]||d.last_error)}</div>`:"";
+    const stTip=STATE_TIP[d.state]||"";
+    const logsBtn=d.has_logs?`<button class="logsbtn" data-boot="${esc(d.boot_id)}"
+      data-tip="Ouvrir les logs complets de cette box.">Logs</button>`:"";
+    return `<tr class="row ${isErr?"err":""}">
+      <td><span class="mac" data-boot="${esc(d.boot_id)}" data-tip="Voir la chronologie d'installation">${esc(d.mac)}</span>${wl}${flashImg}</td>
+      <td class="ip">${esc(d.ip)&&d.ip!=="UNKNOWN"?esc(d.ip):"—"}</td>
+      <td><span class="state st-${d.state}" data-tip="${esc(stTip)}">${esc(STATE_LABEL[d.state]||d.state)}</span></td>
+      <td>${installBadge(d)}${lastErr}</td>
+      <td class="reboot" data-tip="Reboots réseau détectés dans la fenêtre de surveillance. Au seuil (${thr}), la box est reflashée automatiquement."><span class="${rcCls}">${rc}</span><span class="muted">/${thr}</span></td>
+      <td class="reboot">${dur(d.sec_since_reboot)}</td>
+      <td class="reboot">${dur(d.avg_reboot_gap)}</td>
+      <td class="muted" data-tip="${absTime(serverNow-d.sec_since_update)}">${ago(serverNow-d.sec_since_update)}</td>
+      <td class="actions">
+        <button class="reflash" data-mac="${esc(d.mac)}" data-act="reflash"
+          data-tip="Force le re-flash au prochain boot : la box re-télécharge et réécrit l'image, même si elle était bloquée.">Reflash</button>
+        <button class="block" data-mac="${esc(d.mac)}" data-act="block"
+          data-tip="Passe la box sur sa carte SD : le serveur cesse de servir les fichiers de boot, la box démarre depuis la SD (fonctionnement normal).">CarteSD</button>
+        <button class="reset" data-mac="${esc(d.mac)}" data-act="reset"
+          data-tip="Remise à zéro : efface l'état, les compteurs et la dernière erreur. Ne force pas de flash, repart propre.">Reset</button>
+        ${logsBtn}
+      </td>
+    </tr>`;
+  }).join("");
+
+  // Header counters (clickable filters)
+  let allowed=0,mon=0,perm=0,errs=0;
+  lastData.forEach(d=>{ if(d.state==="allowed")allowed++; else if(d.state==="blocked_monitoring")mon++;
+    else if(d.state==="blocked_permanent")perm++; if(d.install_status==="error")errs++; });
+  const chip=(key,color,n,label)=>`<span class="chip ${filterState===key?"active":""}" data-f="${key}">
+    <span class="dot" style="background:${color}"></span><b>${n}</b> ${label}</span>`;
+  document.getElementById("stats").innerHTML =
+    chip("allowed","var(--run)",allowed,"à flasher")+
+    chip("blocked_monitoring","var(--warn)",mon,"surveillance")+
+    chip("blocked_permanent","var(--ok)",perm,"stables")+
+    chip("error","var(--err)",errs,"erreurs")+
+    `<span class="chip ${filterState===""?"active":""}" data-f=""><b>${lastData.length}</b> total</span>`;
+
+  // wire events
+  document.querySelectorAll(".mac[data-boot]").forEach(el=> el.onclick=()=>{ if(el.dataset.boot) openDetail(el.dataset.boot); else toast("Pas de télémétrie pour cette box"); });
+  document.querySelectorAll(".logsbtn").forEach(el=> el.onclick=(e)=>{ e.stopPropagation(); if(el.dataset.boot){ openDetail(el.dataset.boot); setTimeout(showLogs,150); } });
+  document.querySelectorAll(".actions button[data-act]").forEach(b=> b.onclick=()=>doAction(b.dataset.mac,b.dataset.act));
+  document.querySelectorAll(".chip").forEach(c=> c.onclick=()=>{ filterState=c.dataset.f; render(); });
+}
+
+async function doAction(mac,action){
+  if(!mac || !action){ return; } // garde: bouton sans data-mac/data-act
+  const names={reflash:"forcer le reflash",block:"passer sur carte SD",reset:"réinitialiser"};
+  if(!confirm(`Confirmer : ${names[action]||action} pour ${mac} ?`)) return;
+  try{
+    const r=await (await fetch("/api/v1/action",{method:"POST",headers:authHeaders({"Content-Type":"application/json"}),
+      body:JSON.stringify({mac,action})})).json();
+    toast(r.ok?`${names[action]} appliqué à ${mac}`:`Echec: ${r.error||"erreur"}`);
+  }catch(e){ toast("Erreur reseau"); }
+  refresh();
+}
+
+async function openDetail(bootID){ currentBoot=bootID; document.getElementById("detail").classList.add("show"); document.getElementById("logbox").style.display="none"; await loadTimeline(bootID); }
+
+async function loadTimeline(bootID){
+  let data; try{ data=await (await fetch(api("/api/v1/sessions/"+encodeURIComponent(bootID)))).json(); }catch(e){ return; }
+  if(!data.ok) return;
+  document.getElementById("d-title").textContent=bootID;
+  document.getElementById("d-logs").style.display=data.has_logs?"":"none";
+
+  // reboot-gap sparkline for this MAC (from fleet data)
+  const dev=lastData.find(x=>x.boot_id===bootID);
+  document.getElementById("d-ip").innerHTML = sparkline(dev);
+
+  const ev=data.events||[];
+  document.getElementById("timeline").innerHTML = ev.map(e=>{
+    const cls=e.status==="error"?"b-error":e.status==="retry"?"b-retry":e.status==="ok"?"b-ok":"b-run";
+    const t=new Date(e.received_at*1000).toLocaleTimeString();
+    const ec=e.error_code?` <span class="ec">[${esc(e.error_code)}]</span>`:"";
+    return `<li><time>${t}</time><span><span class="badge ${cls}">${esc(STEP[e.step]||e.step||"—")}</span></span>
+      <span>${esc(e.message)}${ec}</span><span class="dl">${detailStr(e.details)}</span></li>`;
+  }).join("");
+}
+
+function sparkline(dev){
+  if(!dev || !dev.reboot_gaps || dev.reboot_gaps.length<2) return "";
+  const g=dev.reboot_gaps, max=Math.max(...g);
+  const bars=g.map(v=>`<i style="height:${Math.max(3,Math.round(v/max*20))}px"></i>`).join("");
+  return `<span class="muted" style="font-size:11px">écarts reboot</span><span class="spark">${bars}</span>`;
+}
+
+function detailStr(d){ if(!d)return""; const p=[];
+  if(d.bytes_written!=null)p.push((d.bytes_written/1e9).toFixed(2)+"GB");
+  if(d.speed_mbps!=null)p.push(d.speed_mbps+"MB/s");
+  if(d.curl_exit!=null)p.push("curl:"+d.curl_exit); if(d.xz_exit!=null)p.push("xz:"+d.xz_exit); if(d.dd_exit!=null)p.push("dd:"+d.dd_exit);
+  if(d.valid!=null)p.push(d.valid?"valide":"invalide"); return esc(p.join(" · ")); }
+
+async function showLogs(){
+  const b=document.getElementById("logbox");
+  try{ b.textContent=await (await fetch(api("/api/v1/logs/"+encodeURIComponent(currentBoot)))).text(); b.style.display="block"; }
+  catch(e){ b.textContent="(logs indisponibles)"; b.style.display="block"; }
+}
+
+document.getElementById("d-close").onclick=()=>{ document.getElementById("detail").classList.remove("show"); currentBoot=null; };
+document.getElementById("d-logs").onclick=()=>{ const b=document.getElementById("logbox");
+  if(b.style.display==="block"){ b.style.display="none"; return; } showLogs(); };
+document.getElementById("search").oninput=(e)=>{ searchQ=e.target.value.trim(); render(); };
+
+// Mark connection stale if no successful fetch for a while.
+setInterval(()=>{ if(lastFetchOK && Date.now()-lastFetchOK > POLL_MS*3) markLive(false); }, 1000);
+
+renderHead(); refresh(); setInterval(refresh,POLL_MS);
+</script>
+</body>
+</html>

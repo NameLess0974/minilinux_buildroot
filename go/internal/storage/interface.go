@@ -65,6 +65,9 @@ type Storage interface {
 	Cleanup404Events(ctx context.Context, before time.Time) (int64, error)
 	Cleanup404EventsForMAC(ctx context.Context, mac string, cutoff time.Time) (int64, error)
 
+	// Telemetry operations (install progress/error events + full log blobs)
+	TelemetryStorage
+
 	// Lifecycle
 	Close() error
 }

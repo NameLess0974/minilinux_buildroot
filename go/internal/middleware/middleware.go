@@ -4,8 +4,27 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 )
+
+// isDashboardPoll reports whether a request is a routine dashboard read that the
+// browser repeats every few seconds. These are logged only on error, to keep the
+// log readable. Boot, images, ingestion and admin actions are always logged.
+func isDashboardPoll(method, path string) bool {
+	if method != http.MethodGet {
+		return false
+	}
+	switch {
+	case path == "/dashboard",
+		path == "/health",
+		path == "/api/v1/fleet",
+		path == "/api/v1/sessions",
+		strings.HasPrefix(path, "/api/v1/sessions/"):
+		return true
+	}
+	return false
+}
 
 // responseWriter wraps http.ResponseWriter to capture status code
 type responseWriter struct {
@@ -56,6 +75,11 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			// Log after request completes
 			duration := time.Since(start)
+
+			// Skip routine dashboard polling when it succeeded (still log its errors).
+			if rw.status < 400 && isDashboardPoll(r.Method, r.URL.Path) {
+				return
+			}
 
 			// Use different log levels based on status code
 			if rw.status >= 500 {

@@ -24,23 +24,27 @@ func (h *Handlers) HandleBoot(w http.ResponseWriter, r *http.Request) {
 		"mac", clientMAC,
 		"file", filename)
 
-	// Check whitelist
+	// Whitelist check. Note: an UNKNOWN (unresolved) MAC is allowed here on purpose —
+	// a Pi doing its very first network boot may not be in the ARP cache yet, and boot
+	// files are integrity-protected by the RSA signature regardless.
 	if clientMAC != "UNKNOWN" && !h.whitelist.Contains(clientMAC) {
-		h.logger.Warn("MAC not in whitelist",
+		h.logger.Warn("boot request denied - MAC not whitelisted",
 			"mac", clientMAC,
 			"ip", clientIP)
-		http.Error(w, "Device not authorized", http.StatusForbidden)
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
-	// Check file exists
-	filePath := filepath.Join(h.cfg.ServeDirectory, filename)
+	// URL /boot.img maps to <ServeDirectory>/boot/boot.img. The client-facing URL
+	// stays fixed (firmware EEPROM) while the file is stored under boot/.
+	filePath, ok := h.safeResolve("boot/" + filename)
+	if !ok {
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
 	stat, err := os.Stat(filePath)
 	if err != nil {
-		h.logger.Error("file not found",
-			"file", filePath,
-			"error", err)
-		http.Error(w, "File not found", http.StatusNotFound)
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
@@ -99,23 +103,29 @@ func (h *Handlers) HandleImage(w http.ResponseWriter, r *http.Request) {
 		"mac", clientMAC,
 		"file", filename)
 
-	// Check whitelist
-	if clientMAC != "UNKNOWN" && !h.whitelist.Contains(clientMAC) {
-		h.logger.Warn("MAC not in whitelist",
+	// Whitelist: images are sensitive. Deny unless the MAC is known AND whitelisted.
+	// An unresolvable MAC (UNKNOWN) is NOT a free pass — it is refused.
+	if !h.whitelist.Contains(clientMAC) {
+		h.logger.Warn("image request denied - MAC not whitelisted",
 			"mac", clientMAC,
 			"ip", clientIP)
-		http.Error(w, "Device not authorized", http.StatusForbidden)
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
-	// Check file exists
-	filePath := filepath.Join(h.cfg.ServeDirectory, filename)
+	// Resolve the file safely inside the images directory (prevents path traversal).
+	filePath, ok := h.safeResolve(filename)
+	if !ok {
+		h.logger.Warn("image request rejected - unsafe path",
+			"requested", filename,
+			"ip", clientIP)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
 	stat, err := os.Stat(filePath)
 	if err != nil {
-		h.logger.Error("file not found",
-			"file", filePath,
-			"error", err)
-		http.Error(w, "File not found", http.StatusNotFound)
+		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
 
@@ -154,6 +164,25 @@ func (h *Handlers) serveFile(w http.ResponseWriter, r *http.Request, filePath, f
 	h.logger.Info("transfer complete",
 		"file", filename,
 		"bytes", bytesSent)
+}
+
+// safeResolve maps a request-relative filename to an absolute path guaranteed to be
+// inside ServeDirectory. Returns (path, false) if the result would escape the dir
+// (path traversal) — protecting bootkey-private.pem, devices.db, certs/, etc.
+func (h *Handlers) safeResolve(filename string) (string, bool) {
+	// Reject obvious traversal attempts up-front.
+	if strings.Contains(filename, "..") {
+		return "", false
+	}
+	// Clean and join, then verify containment with a path-boundary check.
+	clean := filepath.Clean("/" + filename) // leading slash neutralises absolute paths
+	full := filepath.Join(h.cfg.ServeDirectory, clean)
+
+	base := filepath.Clean(h.cfg.ServeDirectory)
+	if full != base && !strings.HasPrefix(full, base+string(os.PathSeparator)) {
+		return "", false
+	}
+	return full, true
 }
 
 // getClientIP extracts the client IP from the request

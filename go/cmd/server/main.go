@@ -58,6 +58,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Background telemetry purge (retention).
+	go runTelemetryPurge(ctx, store, cfg.TelemetryRetention, cfg.TelemetryPurgeEvery)
+
 	// Start server in goroutine
 	go func() {
 		slog.Info("server starting", "port", cfg.Port)
@@ -82,12 +85,49 @@ func main() {
 	slog.Info("server stopped gracefully")
 }
 
+// runTelemetryPurge periodically deletes telemetry older than retention, until ctx is done.
+func runTelemetryPurge(ctx context.Context, store storage.Storage, retention, every time.Duration) {
+	if retention <= 0 || every <= 0 {
+		return
+	}
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+
+	purge := func() {
+		cutoff := time.Now().Add(-retention)
+		ev, lg, err := store.PurgeTelemetryBefore(ctx, cutoff)
+		if err != nil {
+			slog.Error("telemetry purge failed", "error", err)
+			return
+		}
+		if ev > 0 || lg > 0 {
+			slog.Info("telemetry purged", "events", ev, "logs", lg, "older_than", retention)
+		}
+	}
+
+	purge() // run once at startup
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			purge()
+		}
+	}
+}
+
 func printBanner(cfg *config.Config) {
 	fmt.Println("======================================================================")
 	fmt.Println("  HTTP Boot Server with SD Fallback Detection (Go)")
 	fmt.Println("  Optimized for high-traffic (200-500 devices)")
 	fmt.Println("======================================================================")
-	fmt.Printf("  Port:              %d\n", cfg.Port)
+	fmt.Printf("  HTTP port (boot):  %d  (boot.img / boot.sig only)\n", cfg.Port)
+	if cfg.EnableHTTPS {
+		fmt.Printf("  HTTPS port:        %d  (confirm, health, images, api, dashboard)\n", cfg.HTTPSPort)
+		fmt.Printf("  TLS cert:          %s\n", cfg.TLSCertFile)
+	} else {
+		fmt.Printf("  HTTPS port:        DISABLED (no cert — run scripts/gen-server-cert.sh)\n")
+	}
 	fmt.Printf("  Directory:         %s\n", cfg.ServeDirectory)
 	fmt.Printf("  Database:          %s\n", cfg.DatabasePath)
 	fmt.Printf("  Whitelist:         %s\n", cfg.WhitelistFile)

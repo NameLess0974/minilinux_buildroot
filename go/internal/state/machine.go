@@ -265,6 +265,64 @@ func (m *Machine) ShouldServeBootFile(ctx context.Context, mac string) (bool, st
 	return true, "allowed", nil
 }
 
+// MonitoringWindow returns the configured monitoring window duration.
+func (m *Machine) MonitoringWindow() time.Duration { return m.monitoringWindow }
+
+// FailureThreshold returns the number of 404s (reboots) that triggers a reflash.
+func (m *Machine) FailureThreshold() int { return m.failureThreshold }
+
+// ForceReflash sets the flash_img override so the next boot serves boot files
+// again regardless of the current blocked state (manual "reflash" action).
+func (m *Machine) ForceReflash(ctx context.Context, mac string) error {
+	device, _, err := m.store.GetOrCreateDevice(ctx, mac)
+	if err != nil {
+		return err
+	}
+	m.logger.Warn("MANUAL action: force reflash", "mac", mac, "event", "MANUAL_REFLASH")
+	device.State = Allowed
+	device.FlashImg = true
+	device.FlashComplete = false
+	device.BlockStart = nil
+	device.Error404Count = 0
+	if _, err := m.store.Cleanup404EventsForMAC(ctx, mac, time.Now().Add(time.Hour)); err != nil {
+		m.logger.Error("force reflash: cleanup 404 failed", "mac", mac, "error", err)
+	}
+	return m.store.UpdateDevice(ctx, device)
+}
+
+// ForceBlock moves a device to BLOCKED_MONITORING immediately (manual "passer en
+// box" action: stop serving boot files, let it run from SD).
+func (m *Machine) ForceBlock(ctx context.Context, mac string) error {
+	device, _, err := m.store.GetOrCreateDevice(ctx, mac)
+	if err != nil {
+		return err
+	}
+	m.logger.Warn("MANUAL action: force block (box mode)", "mac", mac, "event", "MANUAL_BLOCK")
+	now := time.Now()
+	device.State = BlockedMonitoring
+	device.FlashImg = false
+	device.BlockStart = &now
+	device.Error404Count = 0
+	return m.store.UpdateDevice(ctx, device)
+}
+
+// Reset clears a device back to a clean ALLOWED state (manual reset).
+func (m *Machine) Reset(ctx context.Context, mac string) error {
+	device, _, err := m.store.GetOrCreateDevice(ctx, mac)
+	if err != nil {
+		return err
+	}
+	m.logger.Warn("MANUAL action: reset device", "mac", mac, "event", "MANUAL_RESET")
+	device.State = Allowed
+	device.FlashImg = false
+	device.FlashComplete = false
+	device.BlockStart = nil
+	device.Error404Count = 0
+	device.LastError = nil
+	device.LastErrorTime = nil
+	return m.store.UpdateDevice(ctx, device)
+}
+
 // logSeparator prints a visual separator
 func (m *Machine) logSeparator() {
 	m.logger.Info("----------------------------------------------------------------------")
