@@ -18,23 +18,23 @@ func (h *Handlers) HandleBoot(w http.ResponseWriter, r *http.Request) {
 	// Parse filename
 	filename := strings.TrimPrefix(r.URL.Path, "/")
 
-	// Log request
+	// Boitier declare dans la console : IP ET MAC doivent correspondre. On part
+	// de l'IP, seule donnee certaine ici.
+	authorized, boxName := h.whitelist.Authorized(clientMAC, clientIP)
+
+	// Une seule ligne par requete : boot.sig est appele a chaque reboot.
 	h.logger.Info("boot request",
 		"ip", clientIP,
 		"mac", clientMAC,
+		"box", boxName,
 		"file", filename)
 
-	// Le boitier doit etre declare dans la console : IP ET MAC doivent
-	// correspondre. On part de l'IP, seule donnee certaine ici, ce qui ferme le
-	// cas d'un MAC non resolu par ARP qui passait auparavant sans controle.
-	if ok, name := h.whitelist.Authorized(clientMAC, clientIP); !ok {
+	if !authorized {
 		h.logger.Warn("boot refuse - boitier non declare ou MAC/IP incoherents",
 			"ip", clientIP, "mac_arp", clientMAC,
 			"mac_attendu", h.whitelist.ExpectedMAC(clientIP))
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
-	} else if name != "" {
-		h.logger.Info("boot autorise", "box", name, "ip", clientIP)
 	}
 
 	// URL /boot.img maps to <ServeDirectory>/boot/boot.img. The client-facing URL

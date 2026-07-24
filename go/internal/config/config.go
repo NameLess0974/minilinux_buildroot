@@ -54,8 +54,8 @@ type Config struct {
 	ARPCacheTTL             time.Duration
 
 	// Telemetry retention: events/logs older than this are purged periodically.
-	TelemetryRetention   time.Duration
-	TelemetryPurgeEvery  time.Duration
+	TelemetryRetention  time.Duration
+	TelemetryPurgeEvery time.Duration
 
 	// Endpoints
 	ConfirmEndpoint string

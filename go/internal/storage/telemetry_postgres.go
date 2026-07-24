@@ -7,8 +7,7 @@ import (
 )
 
 func (s *PostgresStorage) AddTelemetryEvent(ctx context.Context, e *TelemetryEvent) error {
-	// details est du jsonb : une chaine vide n'est pas du JSON valide, on stocke
-	// NULL dans ce cas.
+	// details est du jsonb : une chaine vide n'est pas du JSON valide.
 	var details any
 	if e.Details != "" {
 		details = e.Details
@@ -19,16 +18,13 @@ func (s *PostgresStorage) AddTelemetryEvent(ctx context.Context, e *TelemetryEve
 			(boot_id, mac, ip, client_ts, received_at, step, status, progress,
 			 attempt, message, error_code, details)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		e.BootID, e.MAC, e.IP, e.ClientTS, e.ReceivedAt,
+		e.BootID, normMAC(e.MAC), e.IP, e.ClientTS, e.ReceivedAt,
 		e.Step, e.Status, e.Progress, e.Attempt, e.Message, e.ErrorCode, details)
 	return err
 }
 
-// ListSessions agrege une ligne par boot_id, activite la plus recente d'abord.
-//
-// DISTINCT ON donne directement le dernier evenement de chaque session (Postgres
-// n'a pas besoin de la double jointure que reclamait SQLite). L'ordre
-// received_at DESC, id DESC departage deux evenements de la meme seconde.
+// ListSessions agrege une ligne par boot_id, activite recente d'abord.
+// DISTINCT ON donne le dernier evenement de chaque session.
 func (s *PostgresStorage) ListSessions(ctx context.Context, limit int) ([]*TelemetrySession, error) {
 	if limit <= 0 {
 		limit = 200
@@ -137,8 +133,7 @@ func (s *PostgresStorage) ListEventsForBoot(ctx context.Context, bootID string) 
 	return events, rows.Err()
 }
 
-// SaveLogs upsert le blob puis ne garde que celui-ci pour ce MAC : sans cela les
-// logs s'accumuleraient a chaque reboot d'un meme boitier.
+// SaveLogs ne garde qu'un blob par MAC, sinon ils s'accumulent a chaque reboot.
 func (s *PostgresStorage) SaveLogs(ctx context.Context, bootID, mac, ip, body string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -152,13 +147,13 @@ func (s *PostgresStorage) SaveLogs(ctx context.Context, bootID, mac, ip, body st
 		ON CONFLICT (boot_id) DO UPDATE SET
 			mac = EXCLUDED.mac, ip = EXCLUDED.ip,
 			received_at = EXCLUDED.received_at, body = EXCLUDED.body`,
-		bootID, mac, ip, time.Now(), body); err != nil {
+		bootID, normMAC(mac), ip, time.Now(), body); err != nil {
 		return err
 	}
 
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM boot_telemetry_logs WHERE mac = $1 AND boot_id != $2`,
-		mac, bootID); err != nil {
+		normMAC(mac), bootID); err != nil {
 		return err
 	}
 

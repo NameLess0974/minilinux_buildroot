@@ -28,10 +28,10 @@ func NewMachine(store storage.Storage, monitoringWindow time.Duration, failureTh
 
 // TransitionResult holds the result of a state transition
 type TransitionResult struct {
-	OldState    DeviceState
-	NewState    DeviceState
+	OldState     DeviceState
+	NewState     DeviceState
 	Transitioned bool
-	Message     string
+	Message      string
 }
 
 // Handle404Request processes a 404 request and updates state machine

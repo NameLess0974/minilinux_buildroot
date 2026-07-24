@@ -9,16 +9,10 @@ import (
 	"time"
 )
 
-// Whitelist tient en memoire la liste des boitiers autorises, lue depuis la
-// table box du middleware (declaration faite dans la console).
+// Whitelist : boitiers autorises, lus depuis la table box.
 //
-// Regle : MAC ET IP doivent correspondre. L'IP est le point d'entree car c'est
-// la seule donnee certaine au moment du boot (adresse de la socket) ; le MAC
-// vient d'ARP et n'est pas toujours resolvable.
-//
-// Le cache n'est jamais vide sur erreur : si Postgres est injoignable, on
-// conserve la derniere version connue. Sans cela une panne de base bloquerait
-// le boot de tout le parc, alors que la liste change rarement.
+// Regle stricte MAC + IP. Sur erreur de base on conserve la derniere version
+// connue, sinon une panne Postgres bloquerait le boot de tout le parc.
 type Whitelist struct {
 	db             *sql.DB
 	reloadInterval time.Duration
@@ -58,8 +52,7 @@ func (w *Whitelist) Start() {
 
 func (w *Whitelist) Stop() { close(w.stopCh) }
 
-// Contains indique si un MAC est declare et actif. Ne verifie pas l'IP : les
-// appelants qui disposent de l'IP doivent utiliser Authorized.
+// Contains : MAC declare et actif. Ne verifie pas l'IP (voir Authorized).
 func (w *Whitelist) Contains(mac string) bool {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
@@ -67,15 +60,8 @@ func (w *Whitelist) Contains(mac string) bool {
 	return ok
 }
 
-// Authorized applique la regle stricte MAC + IP.
-//
-// L'IP doit etre declaree et active. Si ARP a resolu un MAC, il doit
-// correspondre a celui declare pour cette IP ; sinon on refuse (usurpation).
-// Si ARP n'a rien resolu (mac vide ou UNKNOWN), l'IP declaree suffit : elle
-// prouve deja que le boitier a ete enregistre, et exiger ARP ferait echouer un
-// premier boot dont l'entree n'est pas encore dans le cache du noyau.
-//
-// Retourne aussi le nom de la box, pour les logs.
+// Authorized : l'IP doit etre declaree, et le MAC ARP correspondre s'il est
+// resolu. Sans entree ARP, l'IP declaree suffit. Renvoie le nom de la box.
 func (w *Whitelist) Authorized(mac, ip string) (bool, string) {
 	w.mu.RLock()
 	e, ok := w.byIP[strings.TrimSpace(ip)]
@@ -140,8 +126,7 @@ func (w *Whitelist) reload() {
 		FROM box
 		WHERE boot_enabled = true`)
 	if err != nil {
-		// On garde la version precedente : mieux vaut une liste un peu vieille
-		// qu'un parc entier refuse.
+		// On garde la version precedente plutot que de refuser tout le parc.
 		w.logger.Error("whitelist: lecture de box impossible, conservation du cache",
 			"error", err, "entries", w.Count())
 		return
@@ -163,6 +148,14 @@ func (w *Whitelist) reload() {
 		}
 		e := entry{MAC: mac, IP: ip, Name: name}
 		newByMAC[mac] = e
+
+		// ip_address n'est pas unique en base : sans ce garde-fou, le boitier
+		// autorise dependrait de l'ordre des lignes.
+		if prev, dup := newByIP[ip]; dup {
+			w.logger.Warn("whitelist: IP declaree sur plusieurs boitiers, la seconde est ignoree",
+				"ip", ip, "retenu", prev.Name, "ignore", name)
+			continue
+		}
 		newByIP[ip] = e
 	}
 	if err := rows.Err(); err != nil {
@@ -182,8 +175,8 @@ func (w *Whitelist) reload() {
 	}
 }
 
-// normalizeMAC uniformise la casse : la console enregistre les MAC en
-// minuscules, ARP les renvoie en majuscules.
+// normalizeMAC : comparaisons insensibles a la casse (box en minuscules,
+// ARP en majuscules).
 func normalizeMAC(mac string) string {
 	return strings.ToUpper(strings.TrimSpace(mac))
 }

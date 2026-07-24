@@ -26,19 +26,19 @@ type TelemetryEvent struct {
 
 // TelemetrySession is an aggregated view of one boot_id, built from its events.
 type TelemetrySession struct {
-	BootID       string    `json:"boot_id"`
-	MAC          string    `json:"mac"`
-	IP           string    `json:"ip"`
-	LastStep     string    `json:"last_step"`
-	LastStatus   string    `json:"last_status"`
-	Progress     int       `json:"progress"`
-	Attempt      int       `json:"attempt"`
-	LastMessage  string    `json:"last_message"`
-	ErrorCode    string    `json:"error_code"`
-	EventCount   int       `json:"event_count"`
-	FirstSeen    time.Time `json:"first_seen"`
-	LastSeen     time.Time `json:"last_seen"`
-	HasLogs      bool      `json:"has_logs"`
+	BootID      string    `json:"boot_id"`
+	MAC         string    `json:"mac"`
+	IP          string    `json:"ip"`
+	LastStep    string    `json:"last_step"`
+	LastStatus  string    `json:"last_status"`
+	Progress    int       `json:"progress"`
+	Attempt     int       `json:"attempt"`
+	LastMessage string    `json:"last_message"`
+	ErrorCode   string    `json:"error_code"`
+	EventCount  int       `json:"event_count"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+	HasLogs     bool      `json:"has_logs"`
 }
 
 // TelemetryStorage defines telemetry persistence, separate from the device state machine.

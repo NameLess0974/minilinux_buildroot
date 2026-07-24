@@ -4,20 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// PostgresStorage implemente Storage sur la base partagee avec le middleware.
-//
-// Les tables boot_* appartiennent a ce serveur : il est le seul a y ecrire. La
-// table box appartient au middleware et n'est jamais ecrite ici (voir
-// whitelist/), pour ne pas ecraser ip_address qui sert a l'auth du pilot.
-//
-// Contrairement a SQLite, les dates sont stockees en timestamp natif et non en
-// entier Unix : le schema est partage avec Drizzle et doit rester lisible par
-// les deux cotes.
+// PostgresStorage : base partagee avec le middleware. Les tables boot_*
+// appartiennent a ce serveur ; box est lue seule (voir whitelist/).
 type PostgresStorage struct {
 	db *sql.DB
 }
@@ -29,9 +23,7 @@ func NewPostgres(dsn string) (*PostgresStorage, error) {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
-	// Le parc tient en quelques centaines de boitiers et les requetes sont
-	// courtes : un pool modeste suffit et evite de monopoliser les connexions
-	// du middleware sur la meme base.
+	// Pool modeste : requetes courtes, base partagee avec le middleware.
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(time.Hour)
@@ -46,7 +38,7 @@ func NewPostgres(dsn string) (*PostgresStorage, error) {
 	return &PostgresStorage{db: db}, nil
 }
 
-// DB expose le pool pour les composants qui lisent d'autres tables (whitelist).
+// DB expose le pool pour la whitelist, qui lit la table box.
 func (s *PostgresStorage) DB() *sql.DB { return s.db }
 
 func (s *PostgresStorage) Close() error { return s.db.Close() }
@@ -55,6 +47,12 @@ func (s *PostgresStorage) Close() error { return s.db.Close() }
 
 const deviceColumns = `mac, state, block_start, error_404_count, flash_complete,
 	flash_img, last_error, last_error_time, last_update, created_at`
+
+// normMAC aligne la casse sur celle de box (minuscules) : ARP renvoie des
+// majuscules, et une jointure box <-> boot_* ne remonterait alors rien.
+func normMAC(mac string) string {
+	return strings.ToLower(strings.TrimSpace(mac))
+}
 
 func scanPgDevice(sc interface{ Scan(...any) error }) (*Device, error) {
 	var (
@@ -84,15 +82,13 @@ func scanPgDevice(sc interface{ Scan(...any) error }) (*Device, error) {
 
 func (s *PostgresStorage) GetDevice(ctx context.Context, mac string) (*Device, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT `+deviceColumns+` FROM boot_devices WHERE mac = $1`, mac)
+		`SELECT `+deviceColumns+` FROM boot_devices WHERE mac = $1`, normMAC(mac))
 	return scanPgDevice(row)
 }
 
-// GetOrCreateDevice insere si absent. L'INSERT ... ON CONFLICT rend l'operation
-// atomique : deux boitiers qui arrivent en meme temps ne peuvent pas se marcher
-// dessus, contrairement au get-puis-insert de l'implementation SQLite.
+// GetOrCreateDevice insere si absent, de facon atomique (ON CONFLICT).
 func (s *PostgresStorage) GetOrCreateDevice(ctx context.Context, mac string) (*Device, bool, error) {
-	d := NewDevice(mac)
+	d := NewDevice(normMAC(mac))
 
 	row := s.db.QueryRowContext(ctx, `
 		INSERT INTO boot_devices (mac, state, error_404_count, flash_complete, flash_img,
@@ -128,7 +124,7 @@ func (s *PostgresStorage) UpdateDevice(ctx context.Context, device *Device) erro
 		WHERE mac = $9`,
 		int(device.State), device.BlockStart, device.Error404Count, device.FlashComplete,
 		device.FlashImg, device.LastError, device.LastErrorTime, device.LastUpdate,
-		device.MAC)
+		normMAC(device.MAC))
 	return err
 }
 
@@ -155,7 +151,7 @@ func (s *PostgresStorage) ListDevices(ctx context.Context) ([]*Device, error) {
 
 func (s *PostgresStorage) Add404Event(ctx context.Context, mac string, ts time.Time) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO boot_404_events (mac, timestamp) VALUES ($1, $2)`, mac, ts)
+		`INSERT INTO boot_404_events (mac, timestamp) VALUES ($1, $2)`, normMAC(mac), ts)
 	return err
 }
 
@@ -163,7 +159,7 @@ func (s *PostgresStorage) Count404InWindow(ctx context.Context, mac string, wind
 	var count int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM boot_404_events WHERE mac = $1 AND timestamp >= $2`,
-		mac, windowStart).Scan(&count)
+		normMAC(mac), windowStart).Scan(&count)
 	return count, err
 }
 
@@ -171,7 +167,7 @@ func (s *PostgresStorage) Get404Timestamps(ctx context.Context, mac string, wind
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT timestamp FROM boot_404_events
 		 WHERE mac = $1 AND timestamp >= $2 ORDER BY timestamp`,
-		mac, windowStart)
+		normMAC(mac), windowStart)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +195,7 @@ func (s *PostgresStorage) Cleanup404Events(ctx context.Context, before time.Time
 
 func (s *PostgresStorage) Cleanup404EventsForMAC(ctx context.Context, mac string, cutoff time.Time) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		`DELETE FROM boot_404_events WHERE mac = $1 AND timestamp < $2`, mac, cutoff)
+		`DELETE FROM boot_404_events WHERE mac = $1 AND timestamp < $2`, normMAC(mac), cutoff)
 	if err != nil {
 		return 0, err
 	}
