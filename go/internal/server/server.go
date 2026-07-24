@@ -99,10 +99,12 @@ func New(cfg *config.Config, store storage.Storage, wl *whitelist.Whitelist, arp
 	}
 
 	// Listener admin : interne uniquement, adresse explicite (loopback).
+	// ReadTimeout a 0 : un upload d'image de plusieurs Go depasse toute limite
+	// raisonnable. ReadHeaderTimeout protege toujours contre les slowloris.
 	s.adminServer = &http.Server{
 		Addr:              cfg.AdminAddr,
 		Handler:           s.adminRoutes(),
-		ReadTimeout:       cfg.ReadTimeout,
+		ReadTimeout:       0,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
@@ -171,6 +173,7 @@ func (s *Server) adminRoutes() http.Handler {
 
 	// Image API: identity + signature status of the image served to the Pi
 	mux.HandleFunc("/api/v1/images", s.handlers.HandleAPIImages)
+	mux.HandleFunc("/api/v1/images/upload", s.handlers.HandleAPIImageUpload)
 
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/", s.handleNotFound)

@@ -69,8 +69,9 @@ type Config struct {
 
 	// Image directory and public key, used to report the served image's identity
 	// and signature validity. The private key is never loaded by the server.
-	ImagesDir     string
-	BootPublicKey string
+	ImagesDir      string
+	BootPublicKey  string
+	BootPrivateKey string // signature des images uploadees
 
 	// Proxies whose X-Forwarded-For / X-Real-IP we trust, as a list of source IPs.
 	// Empty (the default) means we trust nobody and always use the real socket
@@ -156,6 +157,7 @@ func Load(configPath string) *Config {
 	// key does not, it is only read to verify the signature we report.
 	cfg.ImagesDir = getEnvString("IMAGES_DIR", cfg.ServeDirectory+"/images")
 	cfg.BootPublicKey = getEnvString("BOOT_PUBLIC_KEY", root+"/private/keys/bootkey-public.pem")
+	cfg.BootPrivateKey = getEnvString("BOOT_PRIVATE_KEY", root+"/private/keys/bootkey-private.pem")
 
 	cfg.TLSCertFile = getEnvString("TLS_CERT_FILE", root+"/private/certs/server.crt")
 	cfg.TLSKeyFile = getEnvString("TLS_KEY_FILE", root+"/private/certs/server.key")

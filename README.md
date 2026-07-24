@@ -48,6 +48,7 @@ Seul `private/certs/server.crt` (public) est distribué aux Pi.
   - `GET /api/v1/fleet` — état par box (reboots, timing, installation)
   - `GET /api/v1/sessions`, `/api/v1/sessions/{boot_id}`, `/api/v1/logs/{boot_id}`
   - `GET /api/v1/images` — image servie : taille, hash, état de la signature
+  - `POST /api/v1/images/upload` — publie une image (corps brut), la signe et verifie
   - `POST /api/v1/action` — actions manuelles (`reflash`, `block`, `reset`)
 
 Le contrat client complet est dans `docs/auto-installer-api.md`.
@@ -412,6 +413,7 @@ sudo systemctl restart minilinux-server-go  # Redémarrer
 | `SERVICE_TOKEN` | (vide) | Token partagé avec le backend middleware. Vide = accès admin ouvert |
 | `IMAGES_DIR` | {SERVE_DIRECTORY}/images | Répertoire de l'image système |
 | `BOOT_PUBLIC_KEY` | {PROJECT_ROOT}/private/keys/bootkey-public.pem | Clé publique (vérification de signature) |
+| `BOOT_PRIVATE_KEY` | {PROJECT_ROOT}/private/keys/bootkey-private.pem | Clé privée (signature des images uploadées) |
 | `MONITORING_WINDOW` | 5m | Fenêtre de surveillance post-flash |
 | `FAILURE_THRESHOLD` | 3 | Nombre de 404 pour détecter échec |
 | `TELEMETRY_RETENTION` | 14d (336h) | Durée de conservation de la télémétrie |
@@ -447,6 +449,7 @@ ci-dessous est sur HTTPS (18443). La racine `/` renvoie 404 (aucune info exposé
 | `POST /api/v1/logs` | HTTPS | Blob de logs (whitelist MAC) |
 | `GET /api/v1/fleet` | **interne** | État du parc (service token) |
 | `GET /api/v1/images` | **interne** | Image servie : taille, hash, signature (service token) |
+| `POST /api/v1/images/upload` | **interne** | Publie une nouvelle image, la signe et la verifie (service token) |
 | `GET /api/v1/sessions`, `/api/v1/sessions/{boot_id}` | **interne** | Sessions d'installation (service token) |
 | `GET /api/v1/logs/{boot_id}` | **interne** | Logs d'une session (service token) |
 | `POST /api/v1/action` | **interne** | Actions manuelles reflash/block/reset (service token) |
