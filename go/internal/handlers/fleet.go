@@ -41,18 +41,6 @@ func (h *Handlers) RequireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-// macMatchesPeer verifie qu'un MAC auto-declare correspond a l'entree ARP du
-// pair. Un MAC whiteliste est devinable, donc il ne prouve rien seul.
-// Sans entree ARP (client route), on ne peut pas trancher : on renvoie
-// verified=false plutot que de casser les installs legitimes.
-func (h *Handlers) macMatchesPeer(claimed, clientIP string) (ok bool, verified bool) {
-	arpMAC := h.arpCache.Lookup(clientIP)
-	if arpMAC == "" || arpMAC == "UNKNOWN" {
-		return true, false
-	}
-	return strings.EqualFold(arpMAC, claimed), true
-}
-
 // deviceInfo is the per-box view shown in the fleet dashboard: state-machine data
 // (reboot/404 counts, timings) enriched with the latest telemetry session.
 type deviceInfo struct {

@@ -59,10 +59,10 @@ volontairement réduit au strict nécessaire pour les Pi :
 
 | Exposé publiquement | Protection |
 |---------------------|------------|
-| `boot.img` / `boot.sig` | Whitelist MAC (ARP) + signature RSA |
-| `/images/` | Whitelist MAC stricte (MAC inconnu = refusé) |
-| `/confirm/<MAC>` | Whitelist MAC + cohérence avec l'entrée ARP du pair |
-| `POST /api/v1/events`, `/api/v1/logs` | Whitelist MAC + cohérence ARP + corps borné |
+| `boot.img` / `boot.sig` | IP + MAC declares dans `box` + signature RSA |
+| `/images/` | IP + MAC declares dans `box` |
+| `/confirm/<MAC>` | IP + MAC declares dans `box` |
+| `POST /api/v1/events`, `/api/v1/logs` | IP + MAC declares dans `box` + corps borne |
 | `/health` | Aucune (ne renvoie que `{"status":"ok"}`) |
 
 **Tout le reste vit sur le port interne** et n'est pas atteignable depuis
@@ -72,11 +72,9 @@ authentification — c'est la protection principale, le token venant en second.
 
 Points d'attention (corrigés) :
 
-- Le MAC est **déclaré par le client** (URL ou corps JSON). La whitelist seule ne
-  suffit donc pas : un MAC autorisé est devinable. On exige en plus qu'il
-  corresponde à l'entrée ARP du pair quand elle existe. Sans entrée ARP (client
-  routé), la requête est acceptée mais tracée — on ne casse pas les installs
-  légitimes sur un autre segment.
+- Le MAC est **déclaré par le client** (URL ou corps JSON) : il ne prouve rien
+  seul. Le controle part donc de l'IP de la connexion, qui doit etre declaree
+  dans `box`, et le MAC doit correspondre a celui enregistre pour cette IP.
 - `X-Forwarded-For` / `X-Real-IP` ne sont honorés que si la connexion vient d'un
   proxy listé dans `TRUSTED_PROXIES` (vide par défaut). Sinon n'importe qui
   pourrait maquiller son origine dans les logs et fausser la résolution ARP.
@@ -102,7 +100,7 @@ La console ne parle jamais directement à ce serveur : elle n'a pas le token, et
 n'a donc pas besoin d'accepter le certificat auto-signé.
 
 Les routes d'ingestion (les Pi) ne sont PAS concernées — elles restent protégées
-par la whitelist MAC. Si `SERVICE_TOKEN` est vide, l'accès admin est ouvert
+par la liste blanche (IP + MAC declares dans `box`). Si `SERVICE_TOKEN` est vide, l'accès admin est ouvert
 (déploiement interne uniquement).
 
 Générer un token : `openssl rand -hex 32`, puis le renseigner des deux côtés
@@ -119,8 +117,8 @@ Les événements et logs de télémétrie plus vieux que `TELEMETRY_RETENTION`
 ## Table des matières
 
 1. [Logique du Serveur (Machine à États)](#logique-du-serveur-machine-à-états)
-2. [Whitelist MAC](#whitelist-mac)
-3. [Base de Données SQLite](#base-de-données-sqlite)
+2. [Liste blanche (table box)](#liste-blanche-table-box)
+3. [Base de donnees (PostgreSQL)](#base-de-donnees-postgresql)
 4. [Compilation](#compilation)
 5. [Lancement](#lancement)
 6. [Configuration](#configuration)
@@ -189,65 +187,64 @@ Le serveur gère automatiquement le cycle de vie de chaque Raspberry Pi via une 
 
 ---
 
-## Whitelist MAC
+## Liste blanche (table `box`)
 
-Seules les adresses MAC présentes dans la whitelist peuvent télécharger les fichiers.
+Un boitier ne peut telecharger boot.img / l'image que s'il est **declare dans la
+console** (menu Gestion des Boxs). Il n'y a plus de fichier a editer : la table
+`box` du middleware fait office de liste blanche.
 
-### Fichier `mac_whitelist.txt`
+### Regle : MAC **ET** IP
 
+Le controle part de l'**IP** (seule donnee certaine au moment du boot : c'est
+l'adresse de la connexion), puis verifie le MAC via ARP :
+
+| Situation | Resultat |
+|-----------|----------|
+| IP absente de `box`, ou `boot_enabled = false` | refuse |
+| IP presente, ARP resout un MAC different | refuse (usurpation) |
+| IP presente, ARP ne resout rien | autorise — l'IP declaree suffit |
+| IP presente, MAC ARP identique | autorise |
+
+Les IP des Pi sont fixes et choisies : elles doivent etre saisies dans la console
+**avant** le premier branchement, sinon le boitier est refuse.
+
+### Ajouter / retirer un boitier
+
+Depuis la console, menu Gestion des Boxs. La colonne `boot_enabled` permet de
+desactiver un boitier sans supprimer sa fiche :
+
+```sql
+UPDATE box SET boot_enabled = false WHERE mac_address = '2c:cf:67:87:2b:ec';
 ```
-# Whitelist des MAC autorisées
-# Une adresse MAC par ligne (format XX:XX:XX:XX:XX:XX)
-# Les lignes commençant par # sont ignorées
 
-2C:CF:67:87:2B:EC
-DC:A6:32:XX:XX:XX
-E4:5F:01:XX:XX:XX
-```
-
-### Commandes utiles
-
-```bash
-# Voir la whitelist actuelle
-cat config/mac_whitelist.txt
-
-# Ajouter une MAC
-echo "AA:BB:CC:DD:EE:FF" >> config/mac_whitelist.txt
-
-# La whitelist est rechargée automatiquement toutes les 60 secondes
-# Pas besoin de redémarrer le serveur
-```
+La liste est rechargee automatiquement toutes les 60 secondes, sans redemarrage.
+Si PostgreSQL est injoignable, le serveur **conserve la derniere liste connue**
+plutot que de refuser tout le parc.
 
 ---
 
-## Base de Données SQLite
+## Base de donnees (PostgreSQL)
 
-Le serveur utilise SQLite pour stocker l'état de chaque device.
+Le serveur partage la base du middleware. Il possede ses propres tables et
+n'ecrit **jamais** dans `box` (dont `ip_address` sert a l'authentification du
+pilot cote middleware).
 
-### Accéder à la BDD
+| Table | Contenu | Ecrite par |
+|-------|---------|-----------|
+| `boot_devices` | etat de la state machine par boitier | ce serveur |
+| `boot_404_events` | horodatage des reboots reseau | ce serveur |
+| `boot_telemetry_events` | progression d'installation | ce serveur |
+| `boot_telemetry_logs` | blob de logs par `boot_id` | ce serveur |
+| `box` | fiches boitiers + liste blanche | middleware (lue seule ici) |
+
+Le schema est gere par les migrations Drizzle du middleware
+(`apps/backend/drizzle/`), pas par ce serveur.
 
 ```bash
-sqlite3 db/devices.db
+psql -h localhost -U postgres -d sab -c "SELECT mac, state, flash_complete FROM boot_devices;"
 ```
 
-### Commandes SQLite utiles
-
-```sql
--- Affichage lisible
-.headers on
-.mode column
-
--- Voir toutes les tables
-.tables
-
--- Voir le schéma
-.schema devices
-```
-
-### Schéma de la table `devices`
-
-| Colonne | Type | Description |
-|---------|------|-------------|
+---------|------|-------------|
 | `mac` | TEXT | Adresse MAC (clé primaire) |
 | `state` | INTEGER | 0=Allowed, 1=BlockedMonitoring, 2=BlockedPermanent |
 | `block_start` | INTEGER | Timestamp début du blocage (NULL si pas bloqué) |
@@ -319,7 +316,7 @@ DELETE FROM device_404_events;
 ### Prérequis
 
 - Go 1.21+
-- SQLite inclus (modernc.org/sqlite, pas de CGO requis)
+- PostgreSQL via pgx (pas de CGO requis)
 
 ### Commandes
 
@@ -365,7 +362,7 @@ make run
 
 # Avec variables d'environnement personnalisées
 SERVE_DIRECTORY=/chemin/vers/fichiers \
-DATABASE_PATH=/chemin/vers/devices.db \
+DB_PASSWORD=xxx DB_NAME=sab \
 SERVER_PORT=8080 \
 ./go/build/minilinux-server
 ```
@@ -405,8 +402,11 @@ sudo systemctl restart minilinux-server-go  # Redémarrer
 | `SERVER_PORT` | 18743 | Port d'écoute HTTP (boot uniquement) |
 | `HTTPS_PORT` | 18443 | Port d'écoute HTTPS (tout le reste) |
 | `SERVE_DIRECTORY` | {PROJECT_ROOT}/data | Répertoire des fichiers servis |
-| `DATABASE_PATH` | {PROJECT_ROOT}/db/devices.db | Chemin base SQLite |
-| `WHITELIST_FILE` | {PROJECT_ROOT}/config/mac_whitelist.txt | Fichier whitelist |
+| `DB_HOST` | localhost | Hote PostgreSQL (base partagee avec le middleware) |
+| `DB_PORT` | 5432 | Port PostgreSQL |
+| `DB_USER` | postgres | Utilisateur PostgreSQL |
+| `DB_PASSWORD` | (vide) | Mot de passe PostgreSQL |
+| `DB_NAME` | sab | Nom de la base |
 | `TLS_CERT_FILE` | {PROJECT_ROOT}/private/certs/server.crt | Certificat TLS (active HTTPS si présent) |
 | `TLS_KEY_FILE` | {PROJECT_ROOT}/private/certs/server.key | Clé privée TLS |
 | `SERVICE_TOKEN` | (vide) | Token partagé avec le backend middleware. Vide = accès admin ouvert |
@@ -481,9 +481,9 @@ minilinux_buildroot/
 ├── private/                     # Secrets, JAMAIS servis
 │   ├── certs/                   # server.crt (public), server.key (secret)
 │   └── keys/                    # bootkey-private.pem, bootkey-public.pem
-├── db/                          # Base SQLite (devices.db, créée auto)
+├── (base : PostgreSQL partagee avec le middleware)
 ├── config/
-│   └── mac_whitelist.txt        # Liste MACs autorisées
+│   └── (liste blanche : table box, cote middleware)
 ├── scripts/
 │   ├── sign-boot.sh             # Signature de boot.img
 │   └── gen-server-cert.sh       # Génération du certificat TLS
@@ -618,14 +618,13 @@ Le serveur utilise `/proc/net/arp` pour résoudre IP → MAC. Si le Pi n'a pas e
 
 **Solution:** Le Pi doit d'abord envoyer une requête ARP. Généralement résolu automatiquement.
 
-### Base de données corrompue
+### Repartir d'un etat propre
+
+Les tables boot_* peuvent etre videes sans risque : elles se reconstruisent au
+fil des boots. La table `box` (liste blanche) ne doit PAS etre touchee.
 
 ```bash
-# Sauvegarder
-cp db/devices.db db/devices.db.bak
-
-# Supprimer et laisser le serveur recréer
-rm db/devices.db
+psql -h localhost -U postgres -d sab -c "TRUNCATE boot_devices, boot_404_events, boot_telemetry_events, boot_telemetry_logs;"
 sudo systemctl restart minilinux-server-go
 ```
 

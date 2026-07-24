@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -38,9 +40,14 @@ type Config struct {
 	MonitoringWindow time.Duration
 	FailureThreshold int
 
-	// Files
-	WhitelistFile string
-	DatabasePath  string
+	// PostgreSQL : base partagee avec le middleware. Le serveur y ecrit ses
+	// propres tables (boot_*) et LIT la table box, qui fait office de liste
+	// blanche (MAC + IP declares depuis la console). Il n'ecrit jamais dans box.
+	DBHost     string
+	DBPort     int
+	DBUser     string
+	DBPassword string
+	DBName     string
 
 	// Cache settings
 	WhitelistReloadInterval time.Duration
@@ -131,14 +138,19 @@ func Load(configPath string) *Config {
 		ServiceToken: getEnvString("SERVICE_TOKEN", ""),
 		AdminAddr:    getEnvString("ADMIN_ADDR", DefaultAdminAddr),
 
+		// Memes noms de variables que le .env du middleware.
+		DBHost:     getEnvString("DB_HOST", "localhost"),
+		DBPort:     getEnvInt("DB_PORT", 5432),
+		DBUser:     getEnvString("DB_USER", "postgres"),
+		DBPassword: getEnvString("DB_PASSWORD", ""),
+		DBName:     getEnvString("DB_NAME", "sab"),
+
 		TrustedProxies: getEnvList("TRUSTED_PROXIES"),
 	}
 
 	// Paths default under the project root but each can be overridden on its own.
 	// They live OUTSIDE ServeDirectory (data/) so secrets and the DB are never
 	// reachable through the file-serving handlers.
-	cfg.WhitelistFile = getEnvString("WHITELIST_FILE", root+"/config/mac_whitelist.txt")
-	cfg.DatabasePath = getEnvString("DATABASE_PATH", root+"/db/devices.db")
 
 	// Images live inside ServeDirectory (they are served to the Pi); the public
 	// key does not, it is only read to verify the signature we report.
@@ -162,6 +174,13 @@ func fileExists(path string) bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
+}
+
+// DSN construit la chaine de connexion PostgreSQL.
+func (c *Config) DSN() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		url.QueryEscape(c.DBUser), url.QueryEscape(c.DBPassword),
+		c.DBHost, c.DBPort, c.DBName)
 }
 
 // getEnvList reads a comma-separated env var into a slice, dropping empties.

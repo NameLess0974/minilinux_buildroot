@@ -35,16 +35,18 @@ func main() {
 	// Print banner
 	printBanner(cfg)
 
-	// Initialize storage (SQLite)
-	store, err := storage.NewSQLiteStorage(cfg.DatabasePath)
+	// Storage : base PostgreSQL partagee avec le middleware. Les tables boot_*
+	// appartiennent a ce serveur ; la table box est lue seule (liste blanche).
+	store, err := storage.NewPostgres(cfg.DSN())
 	if err != nil {
-		slog.Error("failed to initialize storage", "error", err)
+		slog.Error("connexion PostgreSQL impossible",
+			"host", cfg.DBHost, "port", cfg.DBPort, "db", cfg.DBName, "error", err)
 		os.Exit(1)
 	}
 	defer store.Close()
 
-	// Initialize whitelist manager
-	wl := whitelist.New(cfg.WhitelistFile, cfg.WhitelistReloadInterval)
+	// Liste blanche : les boitiers declares dans la console (table box).
+	wl := whitelist.New(store.DB(), cfg.WhitelistReloadInterval)
 	wl.Start()
 	defer wl.Stop()
 
@@ -129,8 +131,8 @@ func printBanner(cfg *config.Config) {
 		fmt.Printf("  HTTPS port:        DISABLED (no cert — run scripts/gen-server-cert.sh)\n")
 	}
 	fmt.Printf("  Directory:         %s\n", cfg.ServeDirectory)
-	fmt.Printf("  Database:          %s\n", cfg.DatabasePath)
-	fmt.Printf("  Whitelist:         %s\n", cfg.WhitelistFile)
+	fmt.Printf("  Database:          postgres://%s@%s:%d/%s\n", cfg.DBUser, cfg.DBHost, cfg.DBPort, cfg.DBName)
+	fmt.Printf("  Whitelist:         table box (boot_enabled)\n")
 	fmt.Printf("  Monitoring window: %s\n", cfg.MonitoringWindow)
 	fmt.Printf("  Failure threshold: %d x 404\n", cfg.FailureThreshold)
 	fmt.Printf("  Chunk size:        %d KB\n", cfg.ChunkSize/1024)

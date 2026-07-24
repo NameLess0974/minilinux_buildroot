@@ -48,23 +48,15 @@ func (h *Handlers) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 	// Normalize MAC
 	mac = strings.ToUpper(mac)
 
-	// Le MAC vient de l'URL : sans ce controle, n'importe qui joignant le
-	// listener public pilotait la state machine de n'importe quelle box.
-	if !h.whitelist.Contains(mac) {
-		h.logger.Warn("confirm denied - MAC not whitelisted", "mac", mac, "ip", clientIP)
+	// Le MAC vient de l'URL : sans controle, n'importe qui joignant le listener
+	// public pilotait la state machine de n'importe quelle box. On exige que le
+	// MAC annonce soit celui declare pour l'IP de la connexion.
+	if ok, _ := h.whitelist.Authorized(mac, clientIP); !ok {
+		h.logger.Warn("confirm refuse - boitier non declare ou MAC/IP incoherents",
+			"mac_annonce", mac, "mac_arp", clientMAC, "ip", clientIP,
+			"mac_attendu", h.whitelist.ExpectedMAC(clientIP))
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
-	}
-
-	// Un MAC whiteliste est devinable : on exige aussi la coherence ARP.
-	if match, verified := h.macMatchesPeer(mac, clientIP); !match {
-		h.logger.Warn("confirm denied - MAC does not match peer",
-			"mac_claimed", mac, "mac_arp", clientMAC, "ip", clientIP)
-		http.Error(w, "Not found", http.StatusNotFound)
-		return
-	} else if !verified {
-		h.logger.Info("confirm accepted with unverified MAC (no ARP entry)",
-			"mac", mac, "ip", clientIP)
 	}
 
 	// Process based on status

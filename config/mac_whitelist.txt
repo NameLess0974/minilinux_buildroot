@@ -1,5 +1,0 @@
-# MAC Whitelist - Pi autorisés pour HTTP Boot
-# Format: AA:BB:CC:DD:EE:FF (un par ligne)
-# Lignes vides et commentaires (#) ignorés
-
-2C:CF:67:87:2B:EC

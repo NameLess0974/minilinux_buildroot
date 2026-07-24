@@ -60,17 +60,13 @@ func (h *Handlers) HandleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Security: only whitelisted machines may write telemetry (avoids DB spam from
-	// any host on the network). Rejected quietly with 403.
-	if !h.whitelist.Contains(mac) {
-		h.logger.Warn("telemetry: MAC not in whitelist", "mac", mac, "ip", clientIP)
-		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "not authorized"})
-		return
-	}
-
-	// MAC auto-declare : exiger la coherence ARP quand elle est disponible.
-	if match, _ := h.macMatchesPeer(mac, clientIP); !match {
-		h.logger.Warn("telemetry: MAC does not match peer", "mac_claimed", mac, "ip", clientIP)
+	// Le MAC est auto-declare : on exige qu'il corresponde a celui enregistre
+	// pour l'IP de la connexion, sinon n'importe qui injecterait de la
+	// telemetrie au nom d'un autre boitier.
+	if ok, _ := h.whitelist.Authorized(mac, clientIP); !ok {
+		h.logger.Warn("telemetrie refusee - boitier non declare ou MAC/IP incoherents",
+			"mac_annonce", mac, "ip", clientIP,
+			"mac_attendu", h.whitelist.ExpectedMAC(clientIP))
 		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "not authorized"})
 		return
 	}
@@ -135,13 +131,10 @@ func (h *Handlers) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "mac required"})
 		return
 	}
-	if !h.whitelist.Contains(mac) {
-		h.logger.Warn("telemetry logs: MAC not in whitelist", "mac", mac, "ip", clientIP)
-		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "not authorized"})
-		return
-	}
-	if match, _ := h.macMatchesPeer(mac, clientIP); !match {
-		h.logger.Warn("telemetry logs: MAC does not match peer", "mac_claimed", mac, "ip", clientIP)
+	if ok, _ := h.whitelist.Authorized(mac, clientIP); !ok {
+		h.logger.Warn("logs refuses - boitier non declare ou MAC/IP incoherents",
+			"mac_annonce", mac, "ip", clientIP,
+			"mac_attendu", h.whitelist.ExpectedMAC(clientIP))
 		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "not authorized"})
 		return
 	}

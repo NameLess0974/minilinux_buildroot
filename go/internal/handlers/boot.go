@@ -24,15 +24,17 @@ func (h *Handlers) HandleBoot(w http.ResponseWriter, r *http.Request) {
 		"mac", clientMAC,
 		"file", filename)
 
-	// Whitelist check. Note: an UNKNOWN (unresolved) MAC is allowed here on purpose —
-	// a Pi doing its very first network boot may not be in the ARP cache yet, and boot
-	// files are integrity-protected by the RSA signature regardless.
-	if clientMAC != "UNKNOWN" && !h.whitelist.Contains(clientMAC) {
-		h.logger.Warn("boot request denied - MAC not whitelisted",
-			"mac", clientMAC,
-			"ip", clientIP)
+	// Le boitier doit etre declare dans la console : IP ET MAC doivent
+	// correspondre. On part de l'IP, seule donnee certaine ici, ce qui ferme le
+	// cas d'un MAC non resolu par ARP qui passait auparavant sans controle.
+	if ok, name := h.whitelist.Authorized(clientMAC, clientIP); !ok {
+		h.logger.Warn("boot refuse - boitier non declare ou MAC/IP incoherents",
+			"ip", clientIP, "mac_arp", clientMAC,
+			"mac_attendu", h.whitelist.ExpectedMAC(clientIP))
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
+	} else if name != "" {
+		h.logger.Info("boot autorise", "box", name, "ip", clientIP)
 	}
 
 	// URL /boot.img maps to <ServeDirectory>/boot/boot.img. The client-facing URL
@@ -103,12 +105,11 @@ func (h *Handlers) HandleImage(w http.ResponseWriter, r *http.Request) {
 		"mac", clientMAC,
 		"file", filename)
 
-	// Whitelist: images are sensitive. Deny unless the MAC is known AND whitelisted.
-	// An unresolvable MAC (UNKNOWN) is NOT a free pass — it is refused.
-	if !h.whitelist.Contains(clientMAC) {
-		h.logger.Warn("image request denied - MAC not whitelisted",
-			"mac", clientMAC,
-			"ip", clientIP)
+	// Meme regle stricte que pour le boot : IP declaree et MAC coherent.
+	if ok, _ := h.whitelist.Authorized(clientMAC, clientIP); !ok {
+		h.logger.Warn("image refusee - boitier non declare ou MAC/IP incoherents",
+			"ip", clientIP, "mac_arp", clientMAC,
+			"mac_attendu", h.whitelist.ExpectedMAC(clientIP))
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
