@@ -1,1 +1,1 @@
-rootwait console=tty3 quiet splash loglevel=0 logo.nologo vt.global_cursor_default=0 root=/dev/ram0
+rootwait console=tty3 quiet splash loglevel=0 logo.nologo vt.global_cursor_default=0 video=HDMI-A-1:1920x1080@60,depth=32 root=/dev/ram0

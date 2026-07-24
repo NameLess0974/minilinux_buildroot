@@ -19,7 +19,7 @@ endif
 
 # fb_video : splash screen H.265 via libde265, linke en statique (zero dependance runtime).
 TARGET  = fb_video
-CFLAGS  = -Wall -O2 -I$(STAGING)/usr/include -pthread
+CFLAGS  = -Wall -O3 -I$(STAGING)/usr/include -pthread
 LDFLAGS = -static -L$(STAGING)/usr/lib -lde265 -lm -lpthread
 
 all: $(TARGET)

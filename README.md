@@ -124,17 +124,19 @@ Entree** bascule aussi vers les logs a la volee.
 **Preparer la video depuis un MP4 HEVC** (sur la machine de dev, avec ffmpeg) :
 ```bash
 # Extraire le flux HEVC brut en Annex-B (aucun reencodage, copie du flux)
-ffmpeg -i source.mp4 -c:v copy -bsf:v hevc_mp4toannexb -f hevc fb_gif/loading.hevc
+ffmpeg -i source.mp4 -c:v copy -bsf:v hevc_mp4toannexb -f hevc fb_video/loading.hevc
 ```
+> Pour un rendu net & clean (anti-banding, BT.709), voir la config d'encodage complete
+> dans `fb_video/README.md`.
 
 **Recompiler + installer le binaire et la video dans l'overlay** :
 ```bash
-cd fb_gif
+cd fb_video
 make video            # compile fb_video (cross-compile aarch64)
 make install-video    # copie fb_video + loading.hevc dans l'overlay Buildroot
 ```
 
-Source du binaire : dossier fb_gif/ a la racine du projet (fb_video.c + stb_truetype.h).
+Source du binaire : dossier fb_video/ a la racine du projet (fb_video.c + stb_truetype.h).
 Depend de libde265 (paquet Buildroot, active dans .config, linke statiquement depuis
 output/staging). Le paquet est configure pour ne rien laisser dans le rootfs au runtime
 (voir package/libde265/libde265.mk : lib statique, sans SDL ni encodeur, artefacts purges).

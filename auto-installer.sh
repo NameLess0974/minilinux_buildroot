@@ -78,7 +78,7 @@ log_section() {
 }
 
 # Ecrire le pourcentage d'avancement dans le fichier de progression
-# Lu par fb_gif (main.c) pour mettre a jour l'affichage framebuffer
+# Lu par fb_video (fb_video.c) pour mettre a jour l'affichage framebuffer
 set_progress() {
     echo "$1" > "${PROGRESS_FILE}"
 }
