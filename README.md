@@ -224,7 +224,7 @@ SELECT * FROM device_404_events ORDER BY timestamp DESC LIMIT 20;
 
 ### Forcer un Re-flash (flash_img)
 
-Pour forcer le re-flash d'un device même s'il est bloqué :
+Le plus simple est le bouton Reflash du dashboard. En SQL (équivalent) :
 
 ```sql
 -- Activer le flag flash_img (bypass le blocage)
