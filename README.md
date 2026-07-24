@@ -1,7 +1,11 @@
 # HTTP Boot Server (Go)
 
 Serveur pour le boot réseau de Raspberry Pi avec détection automatique de fallback SD,
-télémétrie d'installation et dashboard de suivi du parc.
+télémétrie d'installation et API de suivi du parc.
+
+Le suivi du parc se fait depuis la **console** (`middleware-reborn/apps/console`,
+menu Bootloader, réservé au rôle `sabsystem`). Ce serveur n'expose plus de page
+web : il ne sert que des API.
 
 Optimisé pour gérer 200-500 Raspberry Pi simultanément.
 
@@ -14,7 +18,8 @@ Le serveur écoute sur DEUX ports avec des rôles distincts :
 | Port | Protocole | Sert | Qui appelle |
 |------|-----------|------|-------------|
 | 18743 | HTTP (clair) | `boot.img`, `boot.sig` uniquement | Firmware EEPROM (pas de TLS) |
-| 18443 | HTTPS (TLS pin) | images, télémétrie, confirm, health, dashboard, actions | auto-installer.sh (Linux booté) |
+| 18443 | HTTPS (TLS pin) | images, confirm, health, ingestion télémétrie | auto-installer.sh (Linux booté) |
+| 18543 | HTTP **interne** | API admin : fleet, images, sessions, logs, actions | backend middleware (même machine) |
 
 Le HTTP ne sert que les deux fichiers de boot. Tout le reste est en HTTPS. Les
 fichiers de boot restent sûrs en clair car `boot.sig` (signature RSA) est vérifié
@@ -34,29 +39,74 @@ l'IP/hostname exact utilisé dans l'URL par les Pi. Régénérer avec :
 Seul `private/certs/server.crt` (public) est distribué aux Pi.
 `private/certs/server.key` ne quitte jamais le serveur.
 
-### Télémétrie et dashboard
+### Télémétrie et API de suivi
 
-- Ingestion (depuis les Pi, best-effort, whitelist MAC) :
+- Ingestion (depuis les Pi, best-effort, whitelist MAC — **pas de token**) :
   - `POST /api/v1/events` — un événement par étape d'installation
   - `POST /api/v1/logs` — blob de logs complet en fin de run
-- Lecture (admin, protégée par Basic Auth) :
-  - `GET /dashboard` — page de suivi temps réel du parc
+- Lecture / action (admin, protégée par le service token) :
   - `GET /api/v1/fleet` — état par box (reboots, timing, installation)
   - `GET /api/v1/sessions`, `/api/v1/sessions/{boot_id}`, `/api/v1/logs/{boot_id}`
+  - `GET /api/v1/images` — image servie : taille, hash, état de la signature
   - `POST /api/v1/action` — actions manuelles (`reflash`, `block`, `reset`)
 
 Le contrat client complet est dans `docs/auto-installer-api.md`.
 
-### Authentification admin (HTTP Basic)
+### Surface exposée publiquement
 
-Si `ADMIN_USER` est défini, le dashboard et toutes les routes de lecture/action
-exigent une authentification HTTP Basic (`ADMIN_USER` / `ADMIN_PASS`). Le
-navigateur affiche une fenêtre de connexion. Les identifiants circulent chiffrés
-car ces routes sont uniquement en HTTPS. Les routes d'ingestion (les Pi) ne sont
-PAS concernées (protégées par la whitelist MAC). Si `ADMIN_USER` est vide, l'accès
-admin est ouvert (déploiement interne uniquement).
+Le serveur est joignable depuis une IP publique. Ce qui y est exposé est
+volontairement réduit au strict nécessaire pour les Pi :
 
-Accès dashboard : `https://<hostname>:18443/dashboard` puis login.
+| Exposé publiquement | Protection |
+|---------------------|------------|
+| `boot.img` / `boot.sig` | Whitelist MAC (ARP) + signature RSA |
+| `/images/` | Whitelist MAC stricte (MAC inconnu = refusé) |
+| `/confirm/<MAC>` | Whitelist MAC + cohérence avec l'entrée ARP du pair |
+| `POST /api/v1/events`, `/api/v1/logs` | Whitelist MAC + cohérence ARP + corps borné |
+| `/health` | Aucune (ne renvoie que `{"status":"ok"}`) |
+
+**Tout le reste vit sur le port interne** et n'est pas atteignable depuis
+l'extérieur : état du parc, sessions, lecture des logs, actions manuelles. Un
+endpoint non exposé ne peut pas être attaqué, quel que soit l'état de son
+authentification — c'est la protection principale, le token venant en second.
+
+Points d'attention (corrigés) :
+
+- Le MAC est **déclaré par le client** (URL ou corps JSON). La whitelist seule ne
+  suffit donc pas : un MAC autorisé est devinable. On exige en plus qu'il
+  corresponde à l'entrée ARP du pair quand elle existe. Sans entrée ARP (client
+  routé), la requête est acceptée mais tracée — on ne casse pas les installs
+  légitimes sur un autre segment.
+- `X-Forwarded-For` / `X-Real-IP` ne sont honorés que si la connexion vient d'un
+  proxy listé dans `TRUSTED_PROXIES` (vide par défaut). Sinon n'importe qui
+  pourrait maquiller son origine dans les logs et fausser la résolution ARP.
+
+### Authentification admin (service token)
+
+Les routes de lecture/action ne sont pas appelées par un humain : le seul client
+admin est le **backend middleware**, qui relaie les requêtes de la console. La
+chaîne est :
+
+```
+console (JWT utilisateur)  ->  backend middleware  ->  ce serveur
+                               vérifie le rôle          vérifie SERVICE_TOKEN
+                               sabsystem
+```
+
+Le backend authentifie l'utilisateur (JWT) et vérifie qu'il a le rôle
+`sabsystem` **avant** de relayer. Ce serveur ne vérifie donc qu'une chose : que
+l'appelant est bien le backend. Le token est présenté en `X-Service-Token:
+<token>` (ou `Authorization: Bearer <token>`) et comparé en temps constant.
+
+La console ne parle jamais directement à ce serveur : elle n'a pas le token, et
+n'a donc pas besoin d'accepter le certificat auto-signé.
+
+Les routes d'ingestion (les Pi) ne sont PAS concernées — elles restent protégées
+par la whitelist MAC. Si `SERVICE_TOKEN` est vide, l'accès admin est ouvert
+(déploiement interne uniquement).
+
+Générer un token : `openssl rand -hex 32`, puis le renseigner des deux côtés
+(`SERVICE_TOKEN` ici, `BOOTLOADER_SERVICE_TOKEN` côté backend).
 
 ### Rétention télémétrie
 
@@ -224,7 +274,8 @@ SELECT * FROM device_404_events ORDER BY timestamp DESC LIMIT 20;
 
 ### Forcer un Re-flash (flash_img)
 
-Le plus simple est le bouton Reflash du dashboard. En SQL (équivalent) :
+Le plus simple est le bouton Reflash de la console (menu Bootloader). En SQL
+(équivalent) :
 
 ```sql
 -- Activer le flag flash_img (bypass le blocage)
@@ -358,8 +409,9 @@ sudo systemctl restart minilinux-server-go  # Redémarrer
 | `WHITELIST_FILE` | {PROJECT_ROOT}/config/mac_whitelist.txt | Fichier whitelist |
 | `TLS_CERT_FILE` | {PROJECT_ROOT}/private/certs/server.crt | Certificat TLS (active HTTPS si présent) |
 | `TLS_KEY_FILE` | {PROJECT_ROOT}/private/certs/server.key | Clé privée TLS |
-| `ADMIN_USER` | (vide) | Utilisateur admin (Basic Auth). Vide = accès ouvert |
-| `ADMIN_PASS` | (vide) | Mot de passe admin (Basic Auth) |
+| `SERVICE_TOKEN` | (vide) | Token partagé avec le backend middleware. Vide = accès admin ouvert |
+| `IMAGES_DIR` | {SERVE_DIRECTORY}/images | Répertoire de l'image système |
+| `BOOT_PUBLIC_KEY` | {PROJECT_ROOT}/private/keys/bootkey-public.pem | Clé publique (vérification de signature) |
 | `MONITORING_WINDOW` | 5m | Fenêtre de surveillance post-flash |
 | `FAILURE_THRESHOLD` | 3 | Nombre de 404 pour détecter échec |
 | `TELEMETRY_RETENTION` | 14d (336h) | Durée de conservation de la télémétrie |
@@ -393,9 +445,11 @@ ci-dessous est sur HTTPS (18443). La racine `/` renvoie 404 (aucune info exposé
 | `GET /confirm/<MAC>?status=error&code=...` | HTTPS | Signalement erreur |
 | `POST /api/v1/events` | HTTPS | Télémétrie de progression (whitelist MAC) |
 | `POST /api/v1/logs` | HTTPS | Blob de logs (whitelist MAC) |
-| `GET /dashboard` | HTTPS | Dashboard de suivi (Basic Auth) |
-| `GET /api/v1/fleet` | HTTPS | État du parc (Basic Auth) |
-| `POST /api/v1/action` | HTTPS | Actions manuelles reflash/block/reset (Basic Auth) |
+| `GET /api/v1/fleet` | **interne** | État du parc (service token) |
+| `GET /api/v1/images` | **interne** | Image servie : taille, hash, signature (service token) |
+| `GET /api/v1/sessions`, `/api/v1/sessions/{boot_id}` | **interne** | Sessions d'installation (service token) |
+| `GET /api/v1/logs/{boot_id}` | **interne** | Logs d'une session (service token) |
+| `POST /api/v1/action` | **interne** | Actions manuelles reflash/block/reset (service token) |
 
 ### Codes d'erreur supportés
 
@@ -435,7 +489,7 @@ minilinux_buildroot/
 │   └── gen-server-cert.sh       # Génération du certificat TLS
 ├── deploy/
 │   ├── minilinux-server-go.service
-│   └── minilinux.env.example    # Modèle des secrets (ADMIN_USER/PASS)
+│   └── minilinux.env.example    # Modèle des secrets (SERVICE_TOKEN)
 ├── docs/
 │   └── auto-installer-api.md    # Contrat client auto-installer
 └── go/                          # Code source Go

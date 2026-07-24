@@ -17,7 +17,7 @@ Environment=PROJECT_ROOT=/home/sabuser/minilinux_buildroot
 Environment=SERVER_PORT=18743
 Environment=HTTPS_PORT=18443
 
-# Secrets (ADMIN_USER, ADMIN_PASS) charges depuis un fichier non versionne (600).
+# Secrets (SERVICE_TOKEN) charges depuis un fichier non versionne (600).
 # Voir deploy/minilinux.env.example. Le "-" rend le fichier optionnel au demarrage.
 EnvironmentFile=-/etc/minilinux.env
 

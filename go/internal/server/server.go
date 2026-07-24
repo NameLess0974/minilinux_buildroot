@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	_ "embed"
 	"fmt"
 	stdlog "log"
 	"log/slog"
@@ -38,16 +37,18 @@ func (f tlsNoiseFilter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-//go:embed dashboard.html
-var dashboardHTML []byte
-
-// Server represents the boot server. It runs two listeners:
-//   - httpServer:  plain HTTP, boot.img / boot.sig only (firmware EEPROM can't do TLS)
-//   - httpsServer: TLS, everything else (confirm, health, images, api, dashboard)
+// Server : trois listeners, separes par audience.
+//   - httpServer  : public, HTTP clair, boot.img / boot.sig (EEPROM sans TLS)
+//   - httpsServer : public, TLS, ce dont les Pi ont besoin
+//   - adminServer : INTERNE (loopback), API admin utilisee par le backend
+//
+// L'API admin n'est pas bindee sur les listeners publics : injoignable depuis
+// Internet meme si son controle de token etait contourne.
 type Server struct {
 	cfg         *config.Config
 	httpServer  *http.Server
 	httpsServer *http.Server
+	adminServer *http.Server
 	store       storage.Storage
 	whitelist   *whitelist.Whitelist
 	arpCache    *arp.Cache
@@ -97,6 +98,17 @@ func New(cfg *config.Config, store storage.Storage, wl *whitelist.Whitelist, arp
 		}
 	}
 
+	// Listener admin : interne uniquement, adresse explicite (loopback).
+	s.adminServer = &http.Server{
+		Addr:              cfg.AdminAddr,
+		Handler:           s.adminRoutes(),
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		MaxHeaderBytes:    1 << 20,
+	}
+
 	return s
 }
 
@@ -117,7 +129,8 @@ func (s *Server) bootRoutes() http.Handler {
 }
 
 // secureRoutes is the HTTPS listener: everything sensitive. Reached by the
-// already-booted auto-installer (full Linux, curl+TLS) and by the dashboard browser.
+// already-booted auto-installer (full Linux, curl+TLS) and by the middleware
+// backend, which relays the console's admin requests with a service token.
 func (s *Server) secureRoutes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -127,26 +140,39 @@ func (s *Server) secureRoutes() http.Handler {
 	// Image files
 	mux.HandleFunc("/images/", s.handlers.HandleImage)
 
-	// Telemetry ingestion (from auto-installer, best-effort)
+	// Ingestion telemetrie (ecriture seule). La lecture vit sur le listener
+	// interne : un client public ne peut pas relire les donnees du parc.
 	mux.HandleFunc("/api/v1/events", s.handlers.HandleEvent)
-	mux.HandleFunc("/api/v1/logs", s.handlers.HandleLogs)     // POST blob (no trailing seg)
-	mux.HandleFunc("/api/v1/logs/", s.handlers.HandleAPILogs) // GET /api/v1/logs/{boot_id}
-
-	// Telemetry read API (for dashboard)
-	mux.HandleFunc("/api/v1/sessions", s.handlers.HandleAPISessions)
-	mux.HandleFunc("/api/v1/sessions/", s.handlers.HandleAPISessionDetail)
-
-	// Fleet API: per-box state + reboot timing, and manual actions
-	mux.HandleFunc("/api/v1/fleet", s.handlers.HandleAPIFleet)
-	mux.HandleFunc("/api/v1/action", s.handlers.HandleAPIAction)
-
-	// Dashboard (live monitoring page)
-	mux.HandleFunc("/dashboard", s.handleDashboard)
+	mux.HandleFunc("/api/v1/logs", s.handlers.HandleLogs) // POST blob only
 
 	// Health check
 	mux.HandleFunc("/health", s.handleHealth)
 
 	// Catch-all for unknown paths
+	mux.HandleFunc("/", s.handleNotFound)
+
+	return s.withMiddleware(mux)
+}
+
+// adminRoutes : listener INTERNE (fleet, images, sessions, logs, actions).
+// Bind sur AdminAddr (loopback par defaut). HTTP clair : le trafic ne quitte
+// jamais la machine.
+func (s *Server) adminRoutes() http.Handler {
+	mux := http.NewServeMux()
+
+	// Telemetry read API
+	mux.HandleFunc("/api/v1/sessions", s.handlers.HandleAPISessions)
+	mux.HandleFunc("/api/v1/sessions/", s.handlers.HandleAPISessionDetail)
+	mux.HandleFunc("/api/v1/logs/", s.handlers.HandleAPILogs)
+
+	// Fleet API: per-box state + reboot timing, and manual actions
+	mux.HandleFunc("/api/v1/fleet", s.handlers.HandleAPIFleet)
+	mux.HandleFunc("/api/v1/action", s.handlers.HandleAPIAction)
+
+	// Image API: identity + signature status of the image served to the Pi
+	mux.HandleFunc("/api/v1/images", s.handlers.HandleAPIImages)
+
+	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/", s.handleNotFound)
 
 	return s.withMiddleware(mux)
@@ -164,16 +190,6 @@ func (s *Server) handleHTTPNotAllowed(w http.ResponseWriter, r *http.Request) {
 	s.logger.Warn("plain-HTTP request to non-boot path (refused)",
 		"path", r.URL.Path, "method", r.Method)
 	http.Error(w, "Not found", http.StatusNotFound)
-}
-
-// handleDashboard serves the live monitoring page (admin-guarded, HTTP Basic Auth).
-func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	if !s.handlers.RequireAdmin(w, r) {
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write(dashboardHTML)
 }
 
 // handleHealth returns server health status
@@ -214,22 +230,37 @@ func (s *Server) Start() error {
 			"expected_cert", s.cfg.TLSCertFile)
 	}
 
+	// Listener admin interne.
+	go func() {
+		s.logger.Info("admin (internal) listener starting", "addr", s.cfg.AdminAddr)
+		if err := s.adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.logger.Error("admin listener error", "addr", s.cfg.AdminAddr, "error", err)
+		}
+	}()
+
 	// Block on the plain HTTP (boot) listener.
 	s.logger.Info("HTTP (boot) listener starting", "port", s.cfg.Port)
 	return s.httpServer.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down both listeners.
+// Shutdown gracefully shuts down every listener, returning the first error.
 func (s *Server) Shutdown(ctx context.Context) error {
-	var httpsErr error
+	var firstErr error
+	record := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	if s.httpsServer != nil {
-		httpsErr = s.httpsServer.Shutdown(ctx)
+		record(s.httpsServer.Shutdown(ctx))
 	}
-	httpErr := s.httpServer.Shutdown(ctx)
-	if httpErr != nil {
-		return httpErr
+	if s.adminServer != nil {
+		record(s.adminServer.Shutdown(ctx))
 	}
-	return httpsErr
+	record(s.httpServer.Shutdown(ctx))
+
+	return firstErr
 }
 
 // printInitialState prints the whitelist and device states on startup

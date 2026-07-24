@@ -8,50 +8,67 @@ import (
 	"time"
 )
 
-// AdminAuthorized reports whether a request may perform admin operations
-// (dashboard, manual actions), using HTTP Basic Auth. If no ADMIN_USER is
-// configured, admin access is open (internal deployments). Credentials are
-// compared in constant time to avoid leaking them through timing.
+// AdminAuthorized : seul client admin = le backend middleware, qui a deja
+// verifie le JWT et le role sabsystem. Ce token prouve juste "c'est le backend".
+// SERVICE_TOKEN vide = acces ouvert (deploiement interne). Comparaison en temps
+// constant.
 func (h *Handlers) AdminAuthorized(r *http.Request) bool {
-	if h.cfg.AdminUser == "" {
+	if h.cfg.ServiceToken == "" {
 		return true
 	}
-	user, pass, ok := r.BasicAuth()
-	if !ok {
+	got := r.Header.Get("X-Service-Token")
+	if got == "" {
+		// Accepte aussi Authorization: Bearer <token>.
+		if after, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+			got = after
+		}
+	}
+	if got == "" {
 		return false
 	}
-	uOK := subtle.ConstantTimeCompare([]byte(user), []byte(h.cfg.AdminUser)) == 1
-	pOK := subtle.ConstantTimeCompare([]byte(pass), []byte(h.cfg.AdminPass)) == 1
-	return uOK && pOK
+	return subtle.ConstantTimeCompare([]byte(got), []byte(h.cfg.ServiceToken)) == 1
 }
 
-// RequireAdmin writes a 401 challenge so browsers show a login prompt. Returns
-// true if the request is authorized (caller proceeds), false if it wrote the 401.
+// RequireAdmin ecrit 401 et renvoie false si l'appelant n'est pas le backend.
+// Pas de WWW-Authenticate : API service-a-service, jamais un navigateur.
 func (h *Handlers) RequireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if h.AdminAuthorized(r) {
 		return true
 	}
-	w.Header().Set("WWW-Authenticate", `Basic realm="minilinux admin", charset="UTF-8"`)
-	http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	h.logger.Warn("admin request rejected: bad or missing service token",
+		"path", r.URL.Path, "ip", h.clientIP(r))
+	writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "unauthorized"})
 	return false
+}
+
+// macMatchesPeer verifie qu'un MAC auto-declare correspond a l'entree ARP du
+// pair. Un MAC whiteliste est devinable, donc il ne prouve rien seul.
+// Sans entree ARP (client route), on ne peut pas trancher : on renvoie
+// verified=false plutot que de casser les installs legitimes.
+func (h *Handlers) macMatchesPeer(claimed, clientIP string) (ok bool, verified bool) {
+	arpMAC := h.arpCache.Lookup(clientIP)
+	if arpMAC == "" || arpMAC == "UNKNOWN" {
+		return true, false
+	}
+	return strings.EqualFold(arpMAC, claimed), true
 }
 
 // deviceInfo is the per-box view shown in the fleet dashboard: state-machine data
 // (reboot/404 counts, timings) enriched with the latest telemetry session.
 type deviceInfo struct {
-	MAC             string   `json:"mac"`
-	IP              string   `json:"ip"`
-	State           string   `json:"state"`
-	Whitelisted     bool     `json:"whitelisted"`
-	FlashImg        bool     `json:"flash_img"`        // reflash forced/pending
-	FlashComplete   bool     `json:"flash_complete"`
-	RebootCount     int      `json:"reboot_count"`     // 404s in current window = reboots before reflash
-	RebootThreshold int      `json:"reboot_threshold"` // reflash triggers at this many
-	SecSinceReboot  *int64   `json:"sec_since_reboot"` // since last 404/reboot, nil if none
-	AvgRebootGap    *int64   `json:"avg_reboot_gap"`   // avg seconds between reboots in window
-	RebootGaps      []int64  `json:"reboot_gaps"`      // seconds between consecutive reboots
-	LastError       string   `json:"last_error"`
-	SecSinceUpdate  int64    `json:"sec_since_update"`
+	MAC             string  `json:"mac"`
+	IP              string  `json:"ip"`
+	State           string  `json:"state"`
+	Whitelisted     bool    `json:"whitelisted"`
+	FlashImg        bool    `json:"flash_img"` // reflash forced/pending
+	FlashComplete   bool    `json:"flash_complete"`
+	RebootCount     int     `json:"reboot_count"`     // 404s in current window = reboots before reflash
+	RebootThreshold int     `json:"reboot_threshold"` // reflash triggers at this many
+	SecSinceReboot  *int64  `json:"sec_since_reboot"` // since last 404/reboot, nil if none
+	AvgRebootGap    *int64  `json:"avg_reboot_gap"`   // avg seconds between reboots in window
+	RebootGaps      []int64 `json:"reboot_gaps"`      // seconds between consecutive reboots
+	LastError       string  `json:"last_error"`
+	SecSinceUpdate  int64   `json:"sec_since_update"`
 
 	// Latest telemetry (may be empty if the box never reported install progress)
 	InstallStep     string `json:"install_step"`

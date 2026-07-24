@@ -12,7 +12,7 @@ import (
 // HandleBoot handles requests for boot.img and boot.sig
 func (h *Handlers) HandleBoot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	clientIP := getClientIP(r)
+	clientIP := h.clientIP(r)
 	clientMAC := h.arpCache.Lookup(clientIP)
 
 	// Parse filename
@@ -92,7 +92,7 @@ func (h *Handlers) HandleBoot(w http.ResponseWriter, r *http.Request) {
 
 // HandleImage handles requests for image files (no state machine)
 func (h *Handlers) HandleImage(w http.ResponseWriter, r *http.Request) {
-	clientIP := getClientIP(r)
+	clientIP := h.clientIP(r)
 	clientMAC := h.arpCache.Lookup(clientIP)
 
 	// Parse filename (e.g., /images/final_image.img.xz)
@@ -185,20 +185,9 @@ func (h *Handlers) safeResolve(filename string) (string, bool) {
 	return full, true
 }
 
-// getClientIP extracts the client IP from the request
+// getClientIP renvoie l'adresse du pair, sans tenir compte des en-tetes de
+// forwarding. Preferer h.clientIP quand un Handlers est disponible.
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header first (for proxies)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
-	}
-
-	// Check X-Real-IP header
-	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
-	}
-
-	// Fall back to RemoteAddr
 	ip := r.RemoteAddr
 	// Remove port if present
 	if colonIdx := strings.LastIndex(ip, ":"); colonIdx != -1 {
@@ -215,4 +204,37 @@ func getClientIP(r *http.Request) string {
 	}
 
 	return ip
+}
+
+// clientIP honore X-Forwarded-For / X-Real-IP UNIQUEMENT si la connexion vient
+// d'un proxy liste dans TRUSTED_PROXIES. Le serveur est joignable depuis une IP
+// publique : sinon n'importe qui maquillerait son origine dans les logs et
+// fausserait la resolution ARP dont depend la whitelist.
+func (h *Handlers) clientIP(r *http.Request) string {
+	peer := getClientIP(r)
+
+	if len(h.cfg.TrustedProxies) == 0 {
+		return peer
+	}
+	trusted := false
+	for _, p := range h.cfg.TrustedProxies {
+		if p == peer {
+			trusted = true
+			break
+		}
+	}
+	if !trusted {
+		return peer
+	}
+
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Le premier element est le client d'origine.
+		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+			return first
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
+	}
+	return peer
 }

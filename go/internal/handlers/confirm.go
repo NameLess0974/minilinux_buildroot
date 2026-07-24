@@ -12,7 +12,7 @@ import (
 // URL format: /confirm/<MAC>?status=success or /confirm/<MAC>?status=error&code=signature_invalid
 func (h *Handlers) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	clientIP := getClientIP(r)
+	clientIP := h.clientIP(r)
 	clientMAC := h.arpCache.Lookup(clientIP)
 
 	// Parse URL path to get MAC
@@ -47,6 +47,25 @@ func (h *Handlers) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 
 	// Normalize MAC
 	mac = strings.ToUpper(mac)
+
+	// Le MAC vient de l'URL : sans ce controle, n'importe qui joignant le
+	// listener public pilotait la state machine de n'importe quelle box.
+	if !h.whitelist.Contains(mac) {
+		h.logger.Warn("confirm denied - MAC not whitelisted", "mac", mac, "ip", clientIP)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	}
+
+	// Un MAC whiteliste est devinable : on exige aussi la coherence ARP.
+	if match, verified := h.macMatchesPeer(mac, clientIP); !match {
+		h.logger.Warn("confirm denied - MAC does not match peer",
+			"mac_claimed", mac, "mac_arp", clientMAC, "ip", clientIP)
+		http.Error(w, "Not found", http.StatusNotFound)
+		return
+	} else if !verified {
+		h.logger.Info("confirm accepted with unverified MAC (no ARP entry)",
+			"mac", mac, "ip", clientIP)
+	}
 
 	// Process based on status
 	switch status {

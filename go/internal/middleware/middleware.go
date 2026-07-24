@@ -8,17 +8,17 @@ import (
 	"time"
 )
 
-// isDashboardPoll reports whether a request is a routine dashboard read that the
-// browser repeats every few seconds. These are logged only on error, to keep the
+// isDashboardPoll reports whether a request is a routine console read that the
+// backend repeats every few seconds. These are logged only on error, to keep the
 // log readable. Boot, images, ingestion and admin actions are always logged.
 func isDashboardPoll(method, path string) bool {
 	if method != http.MethodGet {
 		return false
 	}
 	switch {
-	case path == "/dashboard",
-		path == "/health",
+	case path == "/health",
 		path == "/api/v1/fleet",
+		path == "/api/v1/images",
 		path == "/api/v1/sessions",
 		strings.HasPrefix(path, "/api/v1/sessions/"):
 		return true

@@ -49,7 +49,7 @@ func (h *Handlers) HandleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mac := strings.ToUpper(strings.TrimSpace(p.MAC))
-	clientIP := getClientIP(r)
+	clientIP := h.clientIP(r)
 
 	// Fall back to ARP if the client omitted its MAC.
 	if mac == "" {
@@ -64,6 +64,13 @@ func (h *Handlers) HandleEvent(w http.ResponseWriter, r *http.Request) {
 	// any host on the network). Rejected quietly with 403.
 	if !h.whitelist.Contains(mac) {
 		h.logger.Warn("telemetry: MAC not in whitelist", "mac", mac, "ip", clientIP)
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "not authorized"})
+		return
+	}
+
+	// MAC auto-declare : exiger la coherence ARP quand elle est disponible.
+	if match, _ := h.macMatchesPeer(mac, clientIP); !match {
+		h.logger.Warn("telemetry: MAC does not match peer", "mac_claimed", mac, "ip", clientIP)
 		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "not authorized"})
 		return
 	}
@@ -119,7 +126,7 @@ func (h *Handlers) HandleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := getClientIP(r)
+	clientIP := h.clientIP(r)
 	mac := strings.ToUpper(strings.TrimSpace(r.Header.Get("X-Machine-MAC")))
 	if mac == "" {
 		mac = h.arpCache.Lookup(clientIP)
@@ -130,6 +137,11 @@ func (h *Handlers) HandleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.whitelist.Contains(mac) {
 		h.logger.Warn("telemetry logs: MAC not in whitelist", "mac", mac, "ip", clientIP)
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "not authorized"})
+		return
+	}
+	if match, _ := h.macMatchesPeer(mac, clientIP); !match {
+		h.logger.Warn("telemetry logs: MAC does not match peer", "mac_claimed", mac, "ip", clientIP)
 		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "not authorized"})
 		return
 	}
