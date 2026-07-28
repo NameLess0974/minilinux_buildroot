@@ -3,9 +3,9 @@ Port 22
 AddressFamily any
 ListenAddress 0.0.0.0
 
-# Authentification
-PermitRootLogin yes
-PasswordAuthentication yes
+# Authentification : cle publique uniquement
+PermitRootLogin prohibit-password
+PasswordAuthentication no
 PubkeyAuthentication yes
 PermitEmptyPasswords no
 ChallengeResponseAuthentication no

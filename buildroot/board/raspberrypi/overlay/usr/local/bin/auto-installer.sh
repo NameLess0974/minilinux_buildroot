@@ -322,6 +322,27 @@ stream_and_flash() {
     fi
 }
 
+set_boot_signature() {
+    local device="$1"
+    local state="$2"
+    local bytes
+
+    if [ "$state" = "on" ]; then
+        bytes='\x55\xaa'
+    else
+        bytes='\x00\x00'
+    fi
+
+    if printf "$bytes" | dd of="${device}" bs=1 seek=510 conv=notrunc status=none 2>/dev/null; then
+        sync
+        log "Signature de boot MBR: ${state}"
+        return 0
+    fi
+
+    log_error "Impossible d'ecrire la signature de boot MBR (${state})"
+    return 1
+}
+
 verify_signature() {
     local sig_file="$1"
     local hash_file="$2"
@@ -569,6 +590,10 @@ main() {
             sync
             sleep 2
 
+            # Carte non bootable tant que la signature n'est pas validee : une
+            # coupure de courant ici fait repartir le Pi en boot reseau.
+            set_boot_signature "${TARGET_DEVICE}" off
+
             set_progress 90
             log "Duree flash: ${duration} secondes"
             send_event flash_done ok 90 "Flash termine (${duration}s)"
@@ -576,6 +601,7 @@ main() {
             # Verifier la signature RSA
             send_event verify_signature start 92 "Verification signature RSA"
             if verify_signature "${sig_file}" "${hash_file}" "${PUBLIC_KEY}"; then
+                set_boot_signature "${TARGET_DEVICE}" on
                 log_section "SIGNATURE VALIDE - INSTALLATION REUSSIE"
                 set_progress 92
 

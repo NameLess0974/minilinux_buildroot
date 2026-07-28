@@ -15,10 +15,10 @@ buildroot/board/*
 !buildroot/board/raspberrypi/
 !buildroot/board/raspberrypi-system-update/
 
-sauvegarde/*.img
-sauvegarde/*.sig
-sauvegarde/*.cpio*
-sauvegarde/*.zst
+sauvegarde/**/*.img
+sauvegarde/**/*.sig
+sauvegarde/**/*.cpio*
+sauvegarde/**/*.zst
 
 httpboot/
 
@@ -36,3 +36,6 @@ keys/minilinux-root
 
 # Captures de debug du framebuffer (temporaires)
 captures/
+
+bootkey-private.pem
+**/bootkey-private.pem
