@@ -36,8 +36,15 @@ done
 die() { echo "ERREUR: $*" >&2; exit 1; }
 ok()  { echo "  [ok] $*"; }
 
-[ "$(id -u)" -eq 0 ] && die "ne pas lancer en root, le script appelle sudo lui-même"
-sudo -v || die "sudo requis"
+# Deux modes d'execution : root direct (service systemd) ou via sudo
+# (interactif). Le service tourne en root et n'a pas de tty, donc appeler
+# sudo y echouerait.
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+    sudo -v || die "sudo requis"
+fi
 
 echo "=== 1. Vérification du matériel ==="
 MODEL=$(tr -d '\0' < /proc/device-tree/model)
@@ -82,22 +89,26 @@ echo "=== 5. Configuration à appliquer ==="
 sed 's/^/  /' "$CONF"
 echo
 echo "  Config EEPROM actuelle de ce Pi :"
-sudo rpi-eeprom-config 2>/dev/null | sed 's/^/    /' || echo "    (illisible)"
+$SUDO rpi-eeprom-config 2>/dev/null | sed 's/^/    /' || echo "    (illisible)"
 
-if [ "$ASSUME_YES" -eq 0 ]; then
+# Confirmation seulement en interactif. Sans terminal (service systemd, cron,
+# pipe), on ne peut pas poser la question : on flashe directement.
+if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ]; then
     echo
     read -rp ">>> Flasher l'EEPROM avec cette configuration ? [oui/NON] " REP
     [ "$REP" = "oui" ] || { echo "annulé."; exit 0; }
+elif [ "$ASSUME_YES" -eq 0 ]; then
+    echo "  (pas de terminal : mode automatique)"
 fi
 
 echo "=== 6. Génération du binaire ==="
-sudo rpi-eeprom-config \
+$SUDO rpi-eeprom-config \
      --config "$CONF" \
      --pubkey "$PUBKEY" \
      --cacertder "$CERT" \
      --out "$OUT" \
      "$BASE" || die "génération échouée"
-sudo chown "$(id -u):$(id -g)" "$OUT" 2>/dev/null || true
+$SUDO chown "$(id -u):$(id -g)" "$OUT" 2>/dev/null || true
 ok "généré : $OUT"
 
 echo "=== 7. Vérification du binaire généré ==="
@@ -128,14 +139,14 @@ if [ -f "$REF" ]; then
 fi
 
 echo "=== 8. Flash ==="
-sudo rpi-eeprom-update -d -f "$OUT" || die "flash échoué"
+$SUDO rpi-eeprom-update -d -f "$OUT" || die "flash échoué"
 ok "flash programmé"
 
 if [ "$INSTALL_SERVICE" -eq 1 ]; then
     echo "=== 9. Installation du service ==="
-    sudo cp "$DIR/systemd/flash-eeprom.service" /etc/systemd/system/
-    sudo systemctl daemon-reload
-    sudo systemctl enable flash-eeprom.service
+    $SUDO cp "$DIR/systemd/flash-eeprom.service" /etc/systemd/system/
+    $SUDO systemctl daemon-reload
+    $SUDO systemctl enable flash-eeprom.service
     ok "flash-eeprom.service activé (reflash à chaque démarrage)"
 fi
 
