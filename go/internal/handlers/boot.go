@@ -23,11 +23,13 @@ func (h *Handlers) HandleBoot(w http.ResponseWriter, r *http.Request) {
 	authorized, boxName := h.whitelist.Authorized(clientMAC, clientIP)
 
 	// Une seule ligne par requete : boot.sig est appele a chaque reboot.
+	// mac_verifie=false : l'ARP n'a pas resolu le MAC, seule l'IP a autorise.
 	h.logger.Info("boot request",
 		"ip", clientIP,
 		"mac", clientMAC,
 		"box", boxName,
-		"file", filename)
+		"file", filename,
+		"mac_verifie", h.whitelist.MACVerified(clientMAC))
 
 	if !authorized {
 		h.logger.Warn("boot refuse - boitier non declare ou MAC/IP incoherents",
@@ -103,7 +105,8 @@ func (h *Handlers) HandleImage(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("image request",
 		"ip", clientIP,
 		"mac", clientMAC,
-		"file", filename)
+		"file", filename,
+		"mac_verifie", h.whitelist.MACVerified(clientMAC))
 
 	// Meme regle stricte que pour le boot : IP declaree et MAC coherent.
 	if ok, _ := h.whitelist.Authorized(clientMAC, clientIP); !ok {

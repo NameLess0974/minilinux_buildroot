@@ -77,6 +77,16 @@ func (w *Whitelist) Authorized(mac, ip string) (bool, string) {
 	return m == e.MAC, e.Name
 }
 
+// MACVerified indique si le MAC a reellement pu etre confronte a celui declare.
+// Faux quand l'ARP n'a rien resolu : l'autorisation ne repose alors que sur
+// l'IP. L'ARP etant limite au segment local, c'est le cas de tout client hors
+// LAN — la regle "MAC + IP" se degrade en "IP seule" sans que rien ne
+// l'indique. Sert uniquement a tracer cette degradation, jamais a decider.
+func (w *Whitelist) MACVerified(mac string) bool {
+	m := normalizeMAC(mac)
+	return m != "" && m != "UNKNOWN"
+}
+
 // ExpectedMAC renvoie le MAC declare pour une IP, pour tracer un refus.
 func (w *Whitelist) ExpectedMAC(ip string) string {
 	w.mu.RLock()
