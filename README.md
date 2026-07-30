@@ -33,26 +33,14 @@ rpi-eeprom-digest -i boot.img -o boot.sig -k buildroot/board/raspberrypi-system-
 
 ### Configuration EEPROM
 
-```ini
-[all]
-BOOT_UART=1
-BOOT_ORDER=0xf17            # 7=HTTP Boot, 1=SD card, f=Restart
-HTTP_HOST=172.16.1.226
-HTTP_PORT=8080
-HTTP_PATH=/
-```
-
-### Flasher l'EEPROM
+La configuration EEPROM des Pi (boot HTTPS, port 18443) est figée sur la
+branche **`eeprom`**, avec les binaires, le certificat serveur, les scripts de
+flash et de contrôle, et la procédure complète :
 
 ```bash
-# 1. Créer un nouveau pieeprom.bin
-sudo rpi-eeprom-config --config boot.conf --pubkey bootkey-public.pem --out pieeprom-modifier.bin pieeprom-base.bin
-
-# 2. Sur le Raspberry Pi, flasher l'EEPROM
-sudo rpi-eeprom-update -d -f pieeprom-modifier.bin
-
-# 3. Redémarrer
-sudo reboot
+git fetch origin eeprom
+git worktree add ../minilinux-eeprom eeprom
+# puis suivre ../minilinux-eeprom/README.md
 ```
 
 ## Configuration
@@ -66,6 +54,8 @@ buildroot/board/raspberrypi/overlay/usr/local/bin/auto-installer.sh
 L'auto-installer telecharge, flashe et verifie l'image, avec :
 - **Deux canaux serveur** : HTTP (18743, boot.img/boot.sig uniquement, pour le firmware
   EEPROM) et **HTTPS (18443)** pour tout le reste (images, telemetrie, confirmation).
+  L'EEPROM des Pi est aujourd'hui configuree en HTTPS sur 18443 avec certificat
+  epingle (`HTTP_CACERT_HASH`) : voir la branche `eeprom`.
 - **TLS pinne** : toutes les requetes HTTPS utilisent `--cacert /etc/minilinux/server.crt`
   (cert public du serveur, embarque dans l'overlay). Refuse tout MITM.
 - **Robustesse reseau** : sonde `/health` avant le flux (`wait_server_ready`) + retry curl
