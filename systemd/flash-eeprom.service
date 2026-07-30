@@ -1,0 +1,16 @@
+[Unit]
+Description=Configuration automatique de l'EEPROM (boot HTTPS)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+# ATTENTION : chemin à adapter si le dossier est installé ailleurs.
+# -y = pas de confirmation interactive (obligatoire pour un service).
+ExecStart=/home/pi/eeprom/scripts/setup.sh -y
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

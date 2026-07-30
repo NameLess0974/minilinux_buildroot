@@ -1,0 +1,16 @@
+# Clé privée de signature : ne JAMAIS versionner.
+# Elle reste sur la machine de build et sert uniquement à signer boot.img
+# via rpi-eeprom-digest. Seule la publique est dans cette branche.
+bootkey-private.pem
+**/bootkey-private.pem
+*private*.pem
+*.key
+
+# Binaires générés par setup.sh (reproductibles depuis bin/pieeprom-base.bin)
+pieeprom-configured.bin
+pieeprom-rebuild.bin
+rebuild-check.bin
+
+*.swp
+*~
+.DS_Store
