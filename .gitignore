@@ -10,6 +10,10 @@ private/certs/server.key
 private/keys/bootkey-private.pem
 *.key
 
+# Artefacts régénérables par scripts/test-https-boot.sh (DER + fragment EEPROM).
+private/certs/server.der
+private/certs/eeprom-https.txt
+
 # Secrets d'environnement (mot de passe admin en clair). Seul .example est versionné.
 minilinux.env
 

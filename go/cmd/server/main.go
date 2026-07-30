@@ -32,6 +32,24 @@ func main() {
 	// Load configuration
 	cfg := config.Load(*configPath)
 
+	// Un SERVICE_TOKEN vide ouvre l'API admin (fleet, actions, upload d'image
+	// signee). Le fichier d'environnement etant optionnel cote systemd
+	// (EnvironmentFile=-), une erreur de deploiement passerait sinon inapercue :
+	// on refuse de demarrer plutot que de degrader silencieusement.
+	if cfg.ServiceToken == "" && os.Getenv("ALLOW_NO_SERVICE_TOKEN") != "1" {
+		slog.Error("SERVICE_TOKEN absent : l'API admin serait ouverte, arret. " +
+			"Definir SERVICE_TOKEN, ou ALLOW_NO_SERVICE_TOKEN=1 en developpement.")
+		os.Exit(1)
+	}
+
+	// Le boot passe exclusivement par TLS : sans cert il n'y a plus de listener
+	// clair pour degrader silencieusement, aucune box ne booterait.
+	if !cfg.EnableHTTPS {
+		slog.Error("TLS absent : le boot exige HTTPS, arret. Lancer scripts/gen-server-cert.sh",
+			"cert", cfg.TLSCertFile, "key", cfg.TLSKeyFile)
+		os.Exit(1)
+	}
+
 	// Print banner
 	printBanner(cfg)
 
@@ -65,7 +83,7 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		slog.Info("server starting", "port", cfg.Port)
+		slog.Info("server starting", "port", cfg.HTTPSPort)
 		if err := srv.Start(); err != nil {
 			slog.Error("server error", "error", err)
 			cancel()
@@ -120,16 +138,16 @@ func runTelemetryPurge(ctx context.Context, store storage.Storage, retention, ev
 
 func printBanner(cfg *config.Config) {
 	fmt.Println("======================================================================")
-	fmt.Println("  HTTP Boot Server with SD Fallback Detection (Go)")
+	fmt.Println("  HTTPS Boot Server with SD Fallback Detection (Go)")
 	fmt.Println("  Optimized for high-traffic (200-500 devices)")
 	fmt.Println("======================================================================")
-	fmt.Printf("  HTTP port (boot):  %d  (boot.img / boot.sig only)\n", cfg.Port)
 	if cfg.EnableHTTPS {
-		fmt.Printf("  HTTPS port:        %d  (confirm, health, images, api, dashboard)\n", cfg.HTTPSPort)
+		fmt.Printf("  HTTPS port:        %d  (boot, confirm, health, images, api)\n", cfg.HTTPSPort)
 		fmt.Printf("  TLS cert:          %s\n", cfg.TLSCertFile)
 	} else {
 		fmt.Printf("  HTTPS port:        DISABLED (no cert — run scripts/gen-server-cert.sh)\n")
 	}
+	fmt.Printf("  Admin (interne):   %s\n", cfg.AdminAddr)
 	fmt.Printf("  Directory:         %s\n", cfg.ServeDirectory)
 	fmt.Printf("  Database:          postgres://%s@%s:%d/%s\n", cfg.DBUser, cfg.DBHost, cfg.DBPort, cfg.DBName)
 	fmt.Printf("  Whitelist:         table box (boot_enabled)\n")

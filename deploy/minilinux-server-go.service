@@ -1,7 +1,6 @@
 [Unit]
-Description=HTTP Boot Server with SD Fallback Detection (Go)
+Description=HTTPS Boot Server with SD Fallback Detection (Go)
 After=network.target
-Conflicts=minilinux-server.service
 
 [Service]
 Type=simple
@@ -14,7 +13,6 @@ RestartSec=5
 # PROJECT_ROOT ancre tous les chemins par defaut :
 #   data/ (servi), db/devices.db, config/mac_whitelist.txt, private/certs/server.{crt,key}
 Environment=PROJECT_ROOT=/home/sabuser/minilinux_buildroot
-Environment=SERVER_PORT=18743
 Environment=HTTPS_PORT=18443
 
 # Secrets (SERVICE_TOKEN) charges depuis un fichier non versionne (600).

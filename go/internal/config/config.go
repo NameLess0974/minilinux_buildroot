@@ -12,8 +12,7 @@ import (
 // Config holds all server configuration
 type Config struct {
 	// Server settings
-	Port           int // HTTP port (boot.img / boot.sig only — firmware EEPROM can't do TLS)
-	HTTPSPort      int // HTTPS port (Pi-facing: confirm, health, images, telemetry ingestion)
+	HTTPSPort      int // seul port public : boot, confirm, health, images, telemetrie
 	ServeDirectory string
 	ChunkSize      int
 
@@ -82,7 +81,6 @@ type Config struct {
 
 // Default configuration values
 const (
-	DefaultPort        = 18743
 	DefaultHTTPSPort   = 18443
 	DefaultProjectRoot = "/home/sabuser/minilinux_buildroot"
 	DefaultChunkSize   = 64 * 1024 // 64KB
@@ -115,7 +113,6 @@ func Load(configPath string) *Config {
 	root := getEnvString("PROJECT_ROOT", DefaultProjectRoot)
 
 	cfg := &Config{
-		Port:           getEnvInt("SERVER_PORT", DefaultPort),
 		HTTPSPort:      getEnvInt("HTTPS_PORT", DefaultHTTPSPort),
 		ServeDirectory: getEnvString("SERVE_DIRECTORY", root+"/data"),
 		ChunkSize:      getEnvInt("CHUNK_SIZE", DefaultChunkSize),

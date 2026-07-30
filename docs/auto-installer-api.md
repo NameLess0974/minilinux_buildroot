@@ -10,13 +10,13 @@ certificat TLS, et sequence d'appels a cabler sur le flux d'installation existan
 
 URL du serveur : `https://bootloader.sabsystem.com:18443` (HTTPS, port 18443).
 Le certificat inclut ce hostname dans son SAN, donc le pin `--cacert` fonctionne
-avec cette URL. Les fichiers de boot restent sur `http://bootloader.sabsystem.com:18743`.
+avec cette URL. Les fichiers de boot sont sur la meme URL HTTPS.
 
 ## 0. Repartition serveur / client
 
 Deja en place et deploye cote serveur (rien a faire) :
 
-- Les deux listeners : HTTP 18743 (boot) et HTTPS 18443 (tout le reste).
+- Le listener public unique : HTTPS 18443 (boot compris). Plus de canal clair.
 - Le certificat TLS auto-signe, SAN incluant `bootloader.sabsystem.com` et l'IP.
   Fichier public a recuperer : `/home/sabuser/minilinux_buildroot/private/certs/server.crt`.
 - Endpoints d'ingestion `POST /api/v1/events` et `POST /api/v1/logs`, proteges par
@@ -31,21 +31,20 @@ A ta charge cote auto-installer (avec ce guide) :
 
 1. Embarquer `server.crt` dans l'image au chemin `/etc/minilinux/server.crt`.
 2. Basculer les URLs du script vers `https://bootloader.sabsystem.com:18443` pour
-   images, confirm, telemetrie (l'ancien HTTP ne sert plus que boot.img/boot.sig).
+   images, confirm, telemetrie (le port HTTP clair a ete supprime).
 3. Ajouter `--cacert /etc/minilinux/server.crt` a chaque appel HTTPS.
 4. Cabler `send_event()` sur chaque etape et `send_logs()` avant reboot (section 9).
 
-## 1. Vue d'ensemble : deux canaux
+## 1. Vue d'ensemble : un seul canal
 
-Le serveur ecoute sur deux ports avec deux roles distincts.
+Le serveur n'expose qu'un port public.
 
 | Port | Protocole | Usage | Qui appelle |
 |---|---|---|---|
-| 18743 | HTTP (clair) | `boot.img`, `boot.sig` uniquement | Firmware EEPROM (ne sait pas faire TLS) |
-| 18443 | HTTPS (TLS pin) | Images, telemetrie, confirm, health | auto-installer.sh (Linux booté, curl) |
+| 18443 | HTTPS (TLS pin) | `boot.img`, `boot.sig`, images, telemetrie, confirm, health | Firmware EEPROM (`HTTP_CACERT_HASH`) + auto-installer.sh |
 
-Regle : tout ce que le script fait apres le boot passe en HTTPS. Le HTTP ne sert
-que les deux fichiers de boot, telecharges par le firmware avant que Linux demarre.
+Regle : tout passe en HTTPS, y compris les deux fichiers telecharges par le
+firmware avant que Linux demarre.
 
 Les fichiers de boot restent surs en clair car `boot.sig` est une signature RSA
 verifiee par le firmware : une image modifiee est rejetee.

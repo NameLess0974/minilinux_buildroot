@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -63,12 +64,24 @@ func (rw *responseWriter) Flush() {
 	}
 }
 
+func requestChannel(r *http.Request) (scheme string, local string) {
+	scheme = "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if addr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		local = addr.String()
+	}
+	return scheme, local
+}
+
 // Logging returns a middleware that logs HTTP requests
 func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			rw := newResponseWriter(w)
+			scheme, local := requestChannel(r)
 
 			// Process request
 			next.ServeHTTP(rw, r)
@@ -89,6 +102,8 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 					"status", rw.status,
 					"duration", duration,
 					"size", rw.size,
+					"scheme", scheme,
+					"local", local,
 					"remote", r.RemoteAddr)
 			} else if rw.status >= 400 {
 				logger.Warn("HTTP request",
@@ -97,6 +112,8 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 					"status", rw.status,
 					"duration", duration,
 					"size", rw.size,
+					"scheme", scheme,
+					"local", local,
 					"remote", r.RemoteAddr)
 			} else {
 				logger.Info("HTTP request",
@@ -105,6 +122,8 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 					"status", rw.status,
 					"duration", duration,
 					"size", rw.size,
+					"scheme", scheme,
+					"local", local,
 					"remote", r.RemoteAddr)
 			}
 		})

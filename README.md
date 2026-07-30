@@ -17,9 +17,11 @@ Le serveur écoute sur DEUX ports avec des rôles distincts :
 
 | Port | Protocole | Sert | Qui appelle |
 |------|-----------|------|-------------|
-| 18743 | HTTP (clair) | `boot.img`, `boot.sig` uniquement | Firmware EEPROM (pas de TLS) |
-| 18443 | HTTPS (TLS pin) | images, confirm, health, ingestion télémétrie | auto-installer.sh (Linux booté) |
+| 18443 | HTTPS (TLS pin) | `boot.img`, `boot.sig`, images, confirm, health, ingestion télémétrie | Firmware EEPROM (`HTTP_CACERT_HASH` requis) + auto-installer.sh |
 | 18543 | HTTP **interne** | API admin : fleet, images, sessions, logs, actions | backend middleware (même machine) |
+
+Il n'y a plus de port HTTP en clair. Une box dont l'EEPROM n'a pas
+`HTTP_CACERT_HASH` ne peut pas booter : il n'existe aucun repli.
 
 Le HTTP ne sert que les deux fichiers de boot. Tout le reste est en HTTPS. Les
 fichiers de boot restent sûrs en clair car `boot.sig` (signature RSA) est vérifié
@@ -364,7 +366,7 @@ make run
 # Avec variables d'environnement personnalisées
 SERVE_DIRECTORY=/chemin/vers/fichiers \
 DB_PASSWORD=xxx DB_NAME=sab \
-SERVER_PORT=8080 \
+HTTPS_PORT=8443 \
 ./go/build/minilinux-server
 ```
 
@@ -400,8 +402,7 @@ sudo systemctl restart minilinux-server-go  # Redémarrer
 | Variable | Défaut | Description |
 |----------|--------|-------------|
 | `PROJECT_ROOT` | /home/sabuser/minilinux_buildroot | Racine ancrant tous les chemins par défaut |
-| `SERVER_PORT` | 18743 | Port d'écoute HTTP (boot uniquement) |
-| `HTTPS_PORT` | 18443 | Port d'écoute HTTPS (tout le reste) |
+| `HTTPS_PORT` | 18443 | Port d'écoute HTTPS (seul port public) |
 | `SERVE_DIRECTORY` | {PROJECT_ROOT}/data | Répertoire des fichiers servis |
 | `DB_HOST` | localhost | Hote PostgreSQL (base partagee avec le middleware) |
 | `DB_PORT` | 5432 | Port PostgreSQL |
@@ -433,8 +434,8 @@ HTTPS s'active automatiquement si `TLS_CERT_FILE` et `TLS_KEY_FILE` existent.
 
 ## Endpoints HTTP
 
-Le port HTTP (18743) ne sert QUE `boot.img` et `boot.sig`. Tout le reste
-ci-dessous est sur HTTPS (18443). La racine `/` renvoie 404 (aucune info exposée).
+Tout est servi sur HTTPS (18443), boot compris. La racine `/` renvoie 404
+(aucune info exposée).
 
 | Endpoint | Port | Description |
 |----------|------|-------------|
