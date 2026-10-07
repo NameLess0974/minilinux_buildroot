@@ -1,5 +1,23 @@
 # minilinux - Buildroot Raspberry Pi System
 
+## Security & Maintenance
+
+MiniLinux is developed and maintained by
+**Cristian Ursan ([@NameLess0974](https://github.com/NameLess0974))**.
+
+The project focuses on secure Raspberry Pi provisioning and recovery,
+including:
+
+- signed boot images and integrity verification;
+- HTTPS delivery with certificate pinning;
+- secure automated recovery;
+- SSH hardening.
+
+Security architecture and vulnerability reporting are documented in
+[SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
+Maintainer responsibilities are documented in
+[MAINTAINERS.md](MAINTAINERS.md).
+
 ## Quick Start
 
 ```bash
